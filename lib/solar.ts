@@ -17,7 +17,7 @@ type SolarJsonOptions = {
 const UPSTAGE_ENDPOINT = "https://api.upstage.ai/v1/chat/completions";
 const DEFAULT_MODEL = "solar-pro4";
 const FALLBACK_MODEL = "solar-pro3";
-const TIMEOUT_MS = 25_000;
+const TIMEOUT_MS = 45_000;
 
 export async function generateSolarJson<T>(options: SolarJsonOptions): Promise<T> {
   const key = getUpstageApiKey();
@@ -51,7 +51,8 @@ async function requestSolarJson<T>(apiKey: string, model: string, options: Solar
         model,
         messages: options.messages,
         temperature: options.temperature ?? 0.4,
-        max_tokens: options.maxTokens ?? 900,
+        max_tokens: completionTokenBudget(model, options),
+        ...(isSolarPro4(model) ? { reasoning_effort: "low" } : {}),
         stream: false,
         response_format: {
           type: "json_schema",
@@ -112,6 +113,22 @@ function getUpstageApiKey() {
 
 function getUpstageModel() {
   return (env as unknown as CloudflareEnv).UPSTAGE_MODEL ?? process.env.UPSTAGE_MODEL ?? DEFAULT_MODEL;
+}
+
+function isSolarPro4(model: string) {
+  return model === DEFAULT_MODEL || model.startsWith(`${DEFAULT_MODEL}-`);
+}
+
+function completionTokenBudget(model: string, options: SolarJsonOptions) {
+  const requested = options.maxTokens ?? 900;
+  if (!isSolarPro4(model)) return requested;
+
+  const minimum = options.schemaName === "writing_report"
+    ? 4_000
+    : options.schemaName === "story_continuation"
+      ? 1_800
+      : 1_600;
+  return Math.max(requested, minimum);
 }
 
 function safeJsonParse<T>(value: string) {

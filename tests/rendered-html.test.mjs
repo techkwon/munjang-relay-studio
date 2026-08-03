@@ -300,6 +300,9 @@ test("uses Solar Pro 4 by default without exposing the API key to client code", 
 
   assert.match(solar, /const DEFAULT_MODEL = "solar-pro4"/);
   assert.match(solar, /\(env as unknown as CloudflareEnv\)\.UPSTAGE_API_KEY \?\? process\.env\.UPSTAGE_API_KEY/);
+  assert.match(solar, /reasoning_effort: "low"/);
+  assert.match(solar, /options\.schemaName === "writing_report"[\s\S]*4_000/);
+  assert.match(solar, /options\.schemaName === "story_continuation"[\s\S]*1_800/);
   assert.doesNotMatch(`${page}\n${teacher}\n${student}`, /UPSTAGE_API_KEY|generateSolarJson|up_[A-Za-z0-9]{12,}/);
 });
 
