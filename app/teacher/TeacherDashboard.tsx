@@ -1,0 +1,574 @@
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
+import Image from "next/image";
+import QRCode from "qrcode";
+
+type RoomStatus = "lobby" | "active" | "complete" | "closed";
+type WriterKind = "human" | "ai";
+
+type RoomWriter = {
+  id: string;
+  name: string;
+  displayName?: string;
+  kind: WriterKind;
+  position: number;
+};
+
+type RoomEntry = {
+  id: string;
+  turnNumber: number;
+  writerName: string;
+  text: string;
+  skipped?: boolean;
+};
+
+type Room = {
+  id: string;
+  code: string;
+  title: string;
+  status: RoomStatus;
+  genre: string;
+  writerLimit: number;
+  humanWriterCount: number;
+  aiWriterCount: number;
+  orderMode: "sequential" | "random";
+  turnLimit: number;
+  turnSeconds: number;
+  currentTurn: number;
+  currentWriterPosition: number;
+  turnExpiresAt: number | null;
+  storyTitle?: string | null;
+  storySetup?: string | null;
+  storyOpener?: string | null;
+  seedSource?: string | null;
+  analysisStatus?: string | null;
+  analysisReport?: unknown;
+  participants?: RoomWriter[];
+  writers?: RoomWriter[];
+  entries?: RoomEntry[];
+  participantCount?: number;
+  createdAt?: number;
+};
+
+const GENRES = [
+  ["all", "랜덤"],
+  ["adventure", "모험"],
+  ["fantasy", "판타지"],
+  ["mystery", "미스터리"],
+  ["daily", "일상"],
+  ["space", "우주"],
+] as const;
+
+const STATUS_LABEL: Record<RoomStatus, string> = {
+  lobby: "입장 대기",
+  active: "활동 중",
+  complete: "완성",
+  closed: "마감",
+};
+
+function getErrorMessage(payload: unknown, fallback: string) {
+  if (payload && typeof payload === "object" && "error" in payload) {
+    const error = (payload as { error?: unknown }).error;
+    if (typeof error === "string") return error;
+  }
+  return fallback;
+}
+
+function normalizeRoom(payload: unknown): Room | null {
+  if (!payload || typeof payload !== "object") return null;
+  const record = payload as Record<string, unknown>;
+  const value = (record.room ?? record) as Record<string, unknown>;
+  const code = typeof value.roomCode === "string" ? value.roomCode : typeof value.code === "string" ? value.code : "";
+  if (!code) return null;
+  const rawParticipants = Array.isArray(value.participants) ? value.participants as Array<Record<string, unknown>> : [];
+  const participants: RoomWriter[] = rawParticipants.map((writer, index): RoomWriter => ({
+    id: String(writer.id ?? `writer-${index}`),
+    name: String(writer.writerName ?? writer.name ?? `작가 ${index + 1}`),
+    kind: writer.writerType === "ai" || writer.kind === "ai" ? "ai" : "human",
+    position: Number(writer.orderPosition ?? writer.slotIndex ?? writer.position ?? index),
+  })).sort((a, b) => a.position - b.position);
+  const current = value.currentTurn && typeof value.currentTurn === "object"
+    ? value.currentTurn as Record<string, unknown>
+    : null;
+  const currentParticipantId = typeof current?.participantId === "string" ? current.participantId : "";
+  const currentPosition = participants.find((writer) => writer.id === currentParticipantId)?.position ?? 0;
+  const story = value.story && typeof value.story === "object" ? value.story as Record<string, unknown> : {};
+  const rawEntries = Array.isArray(story.entries) ? story.entries as Array<Record<string, unknown>> : [];
+  const entries: RoomEntry[] = rawEntries.map((entry, index) => ({
+    id: `${code}-${entry.turnIndex ?? index}`,
+    turnNumber: Number(entry.turnIndex ?? index) + 1,
+    writerName: String(entry.writerName ?? "작가"),
+    text: String(entry.text ?? ""),
+  }));
+  const status = (value.status ?? "lobby") as RoomStatus;
+  return {
+    id: code,
+    code,
+    title: String(value.title ?? value.storyTitle ?? `ROOM ${code}`),
+    status,
+    genre: String(value.genre ?? "all"),
+    writerLimit: Number(value.writerLimit ?? participants.length),
+    humanWriterCount: Number(value.humanLimit ?? value.humanWriterCount ?? 1),
+    aiWriterCount: Number(value.aiLimit ?? value.aiWriterCount ?? 0),
+    orderMode: value.orderMode === "random" ? "random" : "sequential",
+    turnLimit: Number(value.turnLimit ?? 8),
+    turnSeconds: Number(value.turnSeconds ?? 60),
+    currentTurn: Number(value.currentTurnIndex ?? 0) + 1,
+    currentWriterPosition: currentPosition,
+    turnExpiresAt: status === "active" ? Number(value.currentDeadlineAt ?? current?.deadlineAt ?? 0) || null : null,
+    storyTitle: typeof value.storyTitle === "string" ? value.storyTitle : null,
+    storySetup: typeof value.storySetup === "string" ? value.storySetup : null,
+    storyOpener: typeof value.storyOpener === "string" ? value.storyOpener : null,
+    seedSource: typeof value.seedSource === "string" ? value.seedSource : null,
+    analysisStatus: typeof value.analysisStatus === "string" ? value.analysisStatus : null,
+    analysisReport: value.analysisReport,
+    participants,
+    entries,
+    participantCount: participants.filter((writer) => writer.kind === "human").length,
+    createdAt: Number(value.createdAt ?? 0),
+  };
+}
+
+function formatCountdown(deadline: number | null, now: number) {
+  if (!deadline) return "--:--";
+  const seconds = Math.max(0, Math.ceil((deadline - now) / 1000));
+  return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+export function TeacherDashboard({
+  user,
+  signOutPath,
+}: {
+  user: { displayName: string; email: string };
+  signOutPath: string;
+}) {
+  const [rooms, setRooms] = useState<Room[]>([]);
+  const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
+  const [selectedRoom, setSelectedRoom] = useState<Room | null>(null);
+  const [humanWriterCount, setHumanWriterCount] = useState(3);
+  const [aiWriterCount, setAiWriterCount] = useState(1);
+  const [genre, setGenre] = useState("all");
+  const [turnLimit, setTurnLimit] = useState(8);
+  const [turnSeconds, setTurnSeconds] = useState(60);
+  const [orderMode, setOrderMode] = useState<"sequential" | "random">("sequential");
+  const [status, setStatus] = useState("교실 서버에 연결하는 중입니다.");
+  const [busy, setBusy] = useState(false);
+  const [qrDataUrl, setQrDataUrl] = useState("");
+  const [joinUrl, setJoinUrl] = useState("");
+  const [now, setNow] = useState(() => Date.now());
+
+  const writers = selectedRoom?.participants ?? selectedRoom?.writers ?? [];
+  const currentWriter = writers.find(
+    (writer) => writer.position === selectedRoom?.currentWriterPosition,
+  );
+  const humanJoined = writers.filter((writer) => writer.kind === "human").length;
+
+  const loadRooms = useCallback(async (quiet = false) => {
+    try {
+      const response = await fetch("/api/teacher/rooms", { cache: "no-store" });
+      const payload = (await response.json()) as { rooms?: unknown[]; error?: string };
+      if (!response.ok) throw new Error(getErrorMessage(payload, "방 목록을 불러오지 못했습니다."));
+      const nextRooms = Array.isArray(payload.rooms)
+        ? payload.rooms.map((room) => normalizeRoom(room)).filter((room): room is Room => Boolean(room))
+        : [];
+      setRooms(nextRooms);
+      setSelectedRoomId((current) => current ?? nextRooms[0]?.id ?? null);
+      if (!quiet) setStatus(`${nextRooms.length}개의 방을 불러왔습니다.`);
+    } catch (error) {
+      if (!quiet) setStatus(error instanceof Error ? error.message : "방 목록을 불러오지 못했습니다.");
+    }
+  }, []);
+
+  const loadRoom = useCallback(async (roomId: string, quiet = false) => {
+    try {
+      const response = await fetch(`/api/teacher/rooms?code=${encodeURIComponent(roomId)}`, {
+        cache: "no-store",
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(getErrorMessage(payload, "방 상태를 불러오지 못했습니다."));
+      const room = normalizeRoom(payload);
+      if (room) setSelectedRoom(room);
+      if (!quiet) setStatus("방 상태를 새로 확인했습니다.");
+      return room;
+    } catch (error) {
+      if (!quiet) setStatus(error instanceof Error ? error.message : "방 상태를 불러오지 못했습니다.");
+      return null;
+    }
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void loadRooms(), 0);
+    return () => window.clearTimeout(timer);
+  }, [loadRooms]);
+
+  useEffect(() => {
+    if (!selectedRoomId) {
+      return;
+    }
+    const timer = window.setTimeout(() => void loadRoom(selectedRoomId), 0);
+    return () => window.clearTimeout(timer);
+  }, [loadRoom, selectedRoomId]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setNow(Date.now());
+      void loadRooms(true);
+      if (selectedRoomId) void loadRoom(selectedRoomId, true);
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [loadRoom, loadRooms, selectedRoomId]);
+
+  useEffect(() => {
+    if (!selectedRoom) return;
+    const url = `${window.location.origin}/join?room=${encodeURIComponent(selectedRoom.code)}`;
+    const joinTimer = window.setTimeout(() => setJoinUrl(url), 0);
+    let cancelled = false;
+    void QRCode.toDataURL(url, {
+      width: 280,
+      margin: 2,
+      color: { dark: "#101426", light: "#f4f7ff" },
+      errorCorrectionLevel: "M",
+    }).then((value) => {
+      if (!cancelled) setQrDataUrl(value);
+    });
+    return () => {
+      cancelled = true;
+      window.clearTimeout(joinTimer);
+    };
+  }, [selectedRoom]);
+
+  useEffect(() => {
+    if (!selectedRoom || busy) return;
+    if (selectedRoom.status === "active" && currentWriter?.kind === "ai") {
+      void runAi("continue", selectedRoom.id, true);
+    }
+    if (
+      (selectedRoom.status === "complete" || selectedRoom.status === "closed") &&
+      (selectedRoom.entries?.length ?? 0) > 0 &&
+      (!selectedRoom.analysisStatus || selectedRoom.analysisStatus === "idle" || selectedRoom.analysisStatus === "pending")
+    ) {
+      void runAi("report", selectedRoom.id, true);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentWriter?.id, selectedRoom?.analysisStatus, selectedRoom?.id, selectedRoom?.status]);
+
+  useEffect(() => {
+    if (!status) return;
+    const timer = window.setTimeout(() => setStatus(""), 5000);
+    return () => window.clearTimeout(timer);
+  }, [status]);
+
+  async function runAi(action: "seed" | "continue" | "report", roomId: string, quiet = false) {
+    if (!quiet) setStatus(action === "report" ? "AI 협업 리포트를 작성하고 있습니다." : "SOLAR 작가가 문장을 준비하고 있습니다.");
+    try {
+      const response = await fetch("/api/ai", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action, roomCode: roomId }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(getErrorMessage(payload, "AI 요청을 처리하지 못했습니다."));
+      await loadRoom(roomId, true);
+      await loadRooms(true);
+      if (!quiet) setStatus("AI 작업이 완료되었습니다.");
+    } catch (error) {
+      if (!quiet) setStatus(error instanceof Error ? error.message : "AI 요청을 처리하지 못했습니다.");
+    }
+  }
+
+  async function createRoom(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (humanWriterCount + aiWriterCount < 2 || humanWriterCount + aiWriterCount > 8) {
+      setStatus("사람과 AI 작가를 합쳐 2명에서 8명으로 설정해 주세요.");
+      return;
+    }
+    setBusy(true);
+    setStatus("새 방을 만들고 있습니다.");
+    try {
+      const response = await fetch("/api/teacher/rooms", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          humanLimit: humanWriterCount,
+          aiLimit: aiWriterCount,
+          writerLimit: humanWriterCount + aiWriterCount,
+          genre,
+          turnLimit,
+          turnSeconds,
+          orderMode,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(getErrorMessage(payload, "방을 만들지 못했습니다."));
+      const room = normalizeRoom(payload);
+      if (!room) throw new Error("만든 방 정보를 확인하지 못했습니다.");
+      setSelectedRoomId(room.id);
+      setSelectedRoom(room);
+      await loadRooms(true);
+      setStatus(`ROOM ${room.code}를 만들었습니다. AI가 첫 문장을 준비합니다.`);
+      await runAi("seed", room.id, true);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "방을 만들지 못했습니다.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function controlRoom(action: "start" | "close") {
+    if (!selectedRoom) return;
+    setBusy(true);
+    setStatus(action === "start" ? "활동을 시작합니다." : "활동을 마감합니다.");
+    try {
+      const response = await fetch("/api/teacher/rooms", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ roomCode: selectedRoom.code, action }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(getErrorMessage(payload, "방 상태를 바꾸지 못했습니다."));
+      const room = normalizeRoom(payload);
+      if (room) setSelectedRoom(room);
+      await loadRooms(true);
+      setStatus(action === "start" ? "활동이 시작되었습니다." : "활동을 마감했습니다.");
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "방 상태를 바꾸지 못했습니다.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function copyJoinLink() {
+    try {
+      await navigator.clipboard.writeText(joinUrl);
+      setStatus("학생 참여 링크를 복사했습니다.");
+    } catch {
+      setStatus("링크를 복사하지 못했습니다. 주소를 직접 선택해 주세요.");
+    }
+  }
+
+  const totalWriters = humanWriterCount + aiWriterCount;
+  const canStart = Boolean(
+    selectedRoom &&
+    selectedRoom.status === "lobby" &&
+    humanJoined >= selectedRoom.humanWriterCount,
+  );
+
+  return (
+    <main className="retro-shell teacher-shell">
+      <a className="skip-link" href="#teacher-main">본문으로 바로 가기</a>
+      <header className="retro-topbar">
+        <Link className="retro-brand" href="/">
+          <span aria-hidden="true">잇</span>
+          <strong>문장잇기</strong>
+          <small>TEACHER OS</small>
+        </Link>
+        <nav className="mode-switcher" aria-label="문장잇기 모드">
+          <Link href="/">LOCAL</Link>
+          <Link href="/teacher" aria-current="page">TEACHER</Link>
+          <Link href="/join">STUDENT</Link>
+        </nav>
+        <div className="teacher-account">
+          <span>{user.displayName}</span>
+          <a href={signOutPath}>로그아웃</a>
+        </div>
+      </header>
+
+      <div id="teacher-main" className="teacher-console">
+        <section className="retro-window room-create-window" aria-labelledby="create-title">
+          <div className="window-titlebar">
+            <span>NEW_ROOM.EXE</span>
+            <i aria-hidden="true">● ● ●</i>
+          </div>
+          <form onSubmit={createRoom} className="room-create-form">
+            <div>
+              <p className="terminal-kicker">ROOM SETUP / SOLAR PRO 4</p>
+              <h1 id="create-title">새 이야기 방 만들기</h1>
+              <p>사람과 AI 작가를 섞고, 각 방을 독립적으로 운영하세요.</p>
+            </div>
+
+            <div className="compact-field-grid">
+              <label className="retro-field">
+                <span>사람 작가</span>
+                <select value={humanWriterCount} onChange={(event) => setHumanWriterCount(Number(event.target.value))}>
+                  {[1, 2, 3, 4, 5, 6, 7].map((value) => <option key={value} value={value}>{value}명</option>)}
+                </select>
+              </label>
+              <label className="retro-field">
+                <span>AI 작가</span>
+                <select value={aiWriterCount} onChange={(event) => setAiWriterCount(Number(event.target.value))}>
+                  {[0, 1, 2, 3, 4].map((value) => <option key={value} value={value}>{value}명</option>)}
+                </select>
+              </label>
+            </div>
+            <p className={`writer-total ${totalWriters < 2 || totalWriters > 8 || turnLimit < totalWriters ? "is-error" : ""}`}>
+              TOTAL WRITERS · {totalWriters} / 8
+              {turnLimit < totalWriters ? " · 총 차례를 늘려 주세요" : ""}
+            </p>
+
+            <label className="retro-field">
+              <span>장르</span>
+              <select value={genre} onChange={(event) => setGenre(event.target.value)}>
+                {GENRES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+              </select>
+            </label>
+
+            <div className="compact-field-grid">
+              <label className="retro-field">
+                <span>총 차례</span>
+                <select value={turnLimit} onChange={(event) => setTurnLimit(Number(event.target.value))}>
+                  {[6, 8, 10].map((value) => <option key={value} value={value} disabled={value < totalWriters}>{value}차례</option>)}
+                </select>
+              </label>
+              <label className="retro-field">
+                <span>차례당 시간</span>
+                <select value={turnSeconds} onChange={(event) => setTurnSeconds(Number(event.target.value))}>
+                  {[45, 60, 90].map((value) => <option key={value} value={value}>{value}초</option>)}
+                </select>
+              </label>
+            </div>
+
+            <fieldset className="order-mode">
+              <legend>집필 순서</legend>
+              <label>
+                <input type="radio" name="order" checked={orderMode === "sequential"} onChange={() => setOrderMode("sequential")} />
+                <span><strong>차례대로</strong><small>등록된 순서로 반복</small></span>
+              </label>
+              <label>
+                <input type="radio" name="order" checked={orderMode === "random"} onChange={() => setOrderMode("random")} />
+                <span><strong>랜덤 셔플</strong><small>시작할 때 순서 확정</small></span>
+              </label>
+            </fieldset>
+
+            <button className="retro-primary" type="submit" disabled={busy || totalWriters < 2 || totalWriters > 8 || turnLimit < totalWriters}>
+              {busy ? "처리 중…" : "방 개설 + AI 첫 문장"}
+            </button>
+          </form>
+        </section>
+
+        <section className="room-board" aria-labelledby="rooms-title">
+          <div className="room-board-heading">
+            <div>
+              <p className="terminal-kicker">MULTI ROOM CONTROL</p>
+              <h2 id="rooms-title">동시 운영 방</h2>
+            </div>
+            <span className="online-chip"><i aria-hidden="true" /> DB ONLINE · {rooms.length}</span>
+          </div>
+
+          {rooms.length === 0 ? (
+            <div className="empty-room-state">
+              <span aria-hidden="true">[ + ]</span>
+              <strong>아직 만든 방이 없습니다.</strong>
+              <p>왼쪽 설정을 마치면 첫 방이 여기에 나타납니다.</p>
+            </div>
+          ) : (
+            <div className="room-card-grid">
+              {rooms.map((room) => {
+                const roomWriters = room.participants ?? room.writers ?? [];
+                const joinedHumans = roomWriters.filter((writer) => writer.kind === "human").length;
+                const roomCurrentWriter = roomWriters.find((writer) => writer.position === room.currentWriterPosition);
+                return (
+                  <button
+                    type="button"
+                    key={room.id}
+                    className={`room-card status-${room.status} ${room.id === selectedRoomId ? "is-selected" : ""}`}
+                    onClick={() => setSelectedRoomId(room.id)}
+                  >
+                    <span className="room-card-bar">ROOM {room.code}</span>
+                    <div className="room-card-top">
+                      <span className={`status-chip status-${room.status}`}>{STATUS_LABEL[room.status]}</span>
+                      <small>{room.orderMode === "random" ? "SHUFFLE" : "SEQUENCE"}</small>
+                    </div>
+                    <strong>{room.title}</strong>
+                    <div className="room-card-metrics">
+                      <span><b>{joinedHumans}</b> / {room.humanWriterCount} HUMAN</span>
+                      <span><b>{room.aiWriterCount}</b> AI</span>
+                    </div>
+                    {room.status === "active" && (
+                      <p>{roomCurrentWriter?.name ?? roomCurrentWriter?.displayName ?? "다음 작가"} · {room.currentTurn}/{room.turnLimit}</p>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {selectedRoom && (
+            <article className="retro-window room-detail">
+              <div className="window-titlebar">
+                <span>ROOM_{selectedRoom.code}.LIVE</span>
+                <i aria-hidden="true">● ● ●</i>
+              </div>
+              <div className="room-detail-grid">
+                <div className="room-share-panel">
+                  <span className={`status-chip status-${selectedRoom.status}`}>{STATUS_LABEL[selectedRoom.status]}</span>
+                  <p className="room-code-label">JOIN CODE</p>
+                  <strong className="room-code-display">{selectedRoom.code}</strong>
+                  {qrDataUrl && <Image unoptimized src={qrDataUrl} alt={`방 코드 ${selectedRoom.code} 참여 QR 코드`} width={190} height={190} />}
+                  <div className="share-actions">
+                    <button type="button" onClick={copyJoinLink}>참여 링크 복사</button>
+                    <a href={joinUrl} target="_blank" rel="noreferrer">학생 화면 열기</a>
+                  </div>
+                </div>
+
+                <div className="room-live-panel">
+                  <div className="room-live-head">
+                    <div>
+                      <p className="terminal-kicker">{selectedRoom.genre.toUpperCase()} · {selectedRoom.seedSource === "ai" ? "AI SEED" : "SAFE SEED"}</p>
+                      <h3>{selectedRoom.storyTitle || selectedRoom.title}</h3>
+                    </div>
+                    <strong className="live-countdown">{formatCountdown(selectedRoom.turnExpiresAt, now)}</strong>
+                  </div>
+                  {selectedRoom.storyOpener ? <blockquote>“{selectedRoom.storyOpener}”</blockquote> : <p className="ai-loading-copy">AI가 첫 문장을 준비하고 있습니다…</p>}
+
+                  <div className="writer-slot-grid" aria-label="작가 순서">
+                    {writers.map((writer) => (
+                      <div
+                        key={writer.id}
+                        className={`writer-slot ${writer.kind} ${writer.position === selectedRoom.currentWriterPosition && selectedRoom.status === "active" ? "is-current" : ""}`}
+                      >
+                        <span>{writer.position + 1}</span>
+                        <strong>{writer.name ?? writer.displayName}</strong>
+                        <small>{writer.kind === "ai" ? "SOLAR AI" : "HUMAN"}</small>
+                      </div>
+                    ))}
+                    {Array.from({ length: Math.max(0, selectedRoom.humanWriterCount - humanJoined) }, (_, index) => (
+                      <div className="writer-slot empty" key={`empty-${index}`}>
+                        <span>?</span><strong>입장 대기</strong><small>HUMAN</small>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="room-control-row">
+                    {selectedRoom.status === "lobby" && (
+                      <button className="retro-primary" type="button" disabled={busy || !canStart} onClick={() => void controlRoom("start")}>
+                        {canStart ? "활동 시작" : `사람 작가 ${selectedRoom.humanWriterCount - humanJoined}명 대기`}
+                      </button>
+                    )}
+                    {(selectedRoom.status === "active" || selectedRoom.status === "lobby") && (
+                      <button className="retro-danger" type="button" disabled={busy} onClick={() => void controlRoom("close")}>활동 마감</button>
+                    )}
+                    {!selectedRoom.storyOpener && <button type="button" onClick={() => void runAi("seed", selectedRoom.id)}>AI 첫 문장 다시 요청</button>}
+                    {(selectedRoom.status === "complete" || selectedRoom.status === "closed") &&
+                      (selectedRoom.entries?.length ?? 0) > 0 && selectedRoom.analysisStatus !== "complete" && (
+                      <button type="button" onClick={() => void runAi("report", selectedRoom.id)}>AI 분석 보고서 만들기</button>
+                    )}
+                  </div>
+
+                  <div className="live-story-mini">
+                    {(selectedRoom.entries ?? []).map((entry) => (
+                      <p key={entry.id}><span>{entry.writerName}</span>{entry.skipped ? "이번 차례를 쉬었습니다." : entry.text}</p>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </article>
+          )}
+        </section>
+      </div>
+
+      <p className="retro-status" aria-live="polite">{status}</p>
+    </main>
+  );
+}

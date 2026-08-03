@@ -3,8 +3,8 @@ import { headers } from "next/headers";
 import "./globals.css";
 
 export const viewport: Viewport = {
-  themeColor: "#f3f0e7",
-  colorScheme: "light",
+  themeColor: "#080b18",
+  colorScheme: "dark light",
 };
 
 export async function generateMetadata(): Promise<Metadata> {
@@ -19,15 +19,15 @@ export async function generateMetadata(): Promise<Metadata> {
   const ogImage = `${protocol}://${host}/og.png`;
 
   return {
-    title: "문장잇기 — 우리끼리 만드는 릴레이 이야기",
+    title: "문장잇기 — AI와 함께 만드는 릴레이 이야기",
     description:
-      "이름과 분위기를 고르고 한 문단씩 이어 쓰는 한국어 릴레이 이야기 게임입니다.",
+      "한 기기에서 쓰거나 교사가 방을 열어 학생과 AI 작가가 함께 이어 쓰는 한국어 릴레이 이야기 활동입니다.",
     applicationName: "문장잇기",
     openGraph: {
       type: "website",
       locale: "ko_KR",
-      title: "문장잇기 — 한 사람이 쓰고, 다음 사람이 상상해요",
-      description: "첫 문장과 이야기 장치를 뽑아 우리만의 이야기를 완성해 보세요.",
+      title: "문장잇기 — 사람과 AI가 차례로 이어 쓰는 이야기",
+      description: "교사는 방을 열고, 학생은 로그인 없이 참여해 한 문단씩 이야기를 완성합니다.",
       images: [
         {
           url: ogImage,
@@ -39,8 +39,8 @@ export async function generateMetadata(): Promise<Metadata> {
     },
     twitter: {
       card: "summary_large_image",
-      title: "문장잇기 — 우리끼리 만드는 릴레이 이야기",
-      description: "한 문단씩 넘기면 예상 못 한 이야기가 완성됩니다.",
+      title: "문장잇기 — 사람과 AI가 함께 쓰는 릴레이 이야기",
+      description: "학생은 로그인 없이 참여하고, AI 작가와 함께 한 편의 이야기를 완성합니다.",
       images: [ogImage],
     },
   };

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import {
   useCallback,
   useEffect,
@@ -540,10 +541,17 @@ export default function Home() {
           <span className="brand-mark" aria-hidden="true">잇</span>
           <span>문장잇기</span>
         </button>
-        <div className={`privacy-note ${storageAvailable ? "" : "is-warning"}`}>
-          <span className="status-dot" aria-hidden="true" />
-          <span className="privacy-prefix">로그인 없이 · </span>
-          <span>{storageAvailable ? "이 기기에만 저장" : "자동 저장 꺼짐"}</span>
+        <div className="topbar-actions">
+          <nav className="mode-switcher" aria-label="문장잇기 모드">
+            <Link href="/" aria-current="page">LOCAL</Link>
+            <Link href="/teacher">TEACHER</Link>
+            <Link href="/join">STUDENT</Link>
+          </nav>
+          <div className={`privacy-note ${storageAvailable ? "" : "is-warning"}`}>
+            <span className="status-dot" aria-hidden="true" />
+            <span className="privacy-prefix">로그인 없이 · </span>
+            <span>{storageAvailable ? "이 기기에만 저장" : "자동 저장 꺼짐"}</span>
+          </div>
         </div>
       </header>
 
@@ -551,7 +559,7 @@ export default function Home() {
         {phase === "setup" && (
           <section className="setup-view" aria-labelledby="hero-title">
             <div className="hero-copy">
-              <p className="eyebrow">우리끼리 만드는 한 편</p>
+              <p className="eyebrow">LOCAL MODE · ONE DEVICE</p>
               <h1 id="hero-title">
                 한 사람이 쓰고,
                 <span>다음 사람이 상상해요.</span>
@@ -560,6 +568,10 @@ export default function Home() {
                 이름과 분위기를 고르면 첫 문장과 이야기 장치가 나타납니다.
                 한 문단씩 넘겨 보세요. 예상 못 한 결말이 기다리고 있어요.
               </p>
+              <div className="hero-mode-links" aria-label="온라인 교실 모드">
+                <Link href="/teacher">교사용 방 만들기 <span aria-hidden="true">↗</span></Link>
+                <Link href="/join">학생용 방 참여 <span aria-hidden="true">→</span></Link>
+              </div>
               <a className="mobile-jump" href="#setup-card">
                 작가와 규칙 정하기 <span aria-hidden="true">↓</span>
               </a>
@@ -599,7 +611,7 @@ export default function Home() {
             >
               <div className="card-heading">
                 <div>
-                  <p>STEP 01</p>
+                  <p>LOCAL_SETUP.EXE</p>
                   <h2>오늘의 작가들을 모아 볼까요?</h2>
                 </div>
                 <span className="setup-badge">약 10초</span>

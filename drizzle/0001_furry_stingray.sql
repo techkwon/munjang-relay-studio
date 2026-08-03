@@ -1,0 +1,1 @@
+ALTER TABLE `rooms` ADD `ai_generation_claimed_at` integer;
