@@ -51,7 +51,7 @@ body {
   color: var(--y2k-invert);
   font-family: var(--font-body);
   line-height: 1.6;
-  min-width: 320px;
+  min-width: 0;
 }
 
 button,
@@ -150,6 +150,7 @@ a:focus-visible {
   font-weight: 900;
   gap: 0.7rem;
   letter-spacing: -0.04em;
+  min-height: 44px;
   padding: 0;
   color: var(--y2k-invert);
   font-family: var(--font-display);
@@ -1270,6 +1271,7 @@ a:focus-visible {
     font-weight: 850;
     gap: 0.65rem;
     margin: 0 auto 1.25rem;
+    min-height: 44px;
     padding: 0.62rem 0.95rem;
     text-decoration: none;
   }
@@ -1448,13 +1450,16 @@ a:focus-visible {
 }
 
 .mode-switcher a {
+  align-items: center;
   border-radius: 3px;
   color: #dbe7ff;
+  display: flex;
   font-family: var(--font-display);
   font-size: 0.68rem;
   font-weight: 900;
   letter-spacing: 0.06em;
-  min-height: 34px;
+  justify-content: center;
+  min-height: 44px;
   padding: 0.45rem 0.68rem;
   text-decoration: none;
 }
@@ -1502,13 +1507,16 @@ a:focus-visible {
 }
 
 .hero-mode-links a {
+  align-items: center;
   background: rgba(8, 11, 24, 0.78);
   border: 1px solid var(--y2k-cyan);
   border-radius: 5px;
   color: var(--y2k-invert);
   font-size: 0.78rem;
   font-weight: 850;
-  min-height: 42px;
+  display: inline-flex;
+  justify-content: center;
+  min-height: 48px;
   padding: 0.55rem 0.78rem;
   text-decoration: none;
 }
@@ -1792,6 +1800,7 @@ a:focus-visible {
   color: var(--y2k-invert);
   display: inline-flex;
   gap: 0.65rem;
+  min-height: 44px;
   text-decoration: none;
   width: fit-content;
 }
@@ -1851,7 +1860,7 @@ a:focus-visible {
   color: inherit;
   font-size: 0.72rem;
   font-weight: 800;
-  min-height: 40px;
+  min-height: 44px;
   padding: 0.5rem 0.72rem;
   text-decoration: none;
 }
@@ -2425,6 +2434,21 @@ a:focus-visible {
   display: none;
 }
 
+.retro-status.student-status {
+  bottom: auto;
+  left: auto;
+  margin: 0 auto 1rem;
+  position: sticky;
+  top: 0.65rem;
+  transform: none;
+  width: min(100%, 760px);
+}
+
+.retro-status.student-status[data-persistent="true"] {
+  border-color: var(--y2k-pink);
+  box-shadow: 3px 3px 0 rgba(255, 51, 204, 0.32);
+}
+
 .student-stage {
   margin: 0 auto;
   max-width: 1320px;
@@ -2488,6 +2512,17 @@ a:focus-visible {
   color: var(--y2k-blue);
   text-decoration: underline;
   text-underline-offset: 0.2em;
+}
+
+.join-blocked {
+  background: #fff2f7;
+  border: 2px solid var(--y2k-pink);
+  border-radius: 5px;
+  color: #64133c;
+  font-weight: 800;
+  line-height: 1.55;
+  margin: 0;
+  padding: 0.75rem 0.85rem;
 }
 
 .student-room-head {
@@ -2866,6 +2901,25 @@ a:focus-visible {
     position: static;
   }
 
+  .student-shell .retro-topbar.compact {
+    align-items: center;
+    gap: 0.4rem;
+    grid-template-columns: auto minmax(0, 1fr);
+    padding: 0.45rem 0.55rem;
+  }
+
+  .student-shell .retro-topbar.compact .mode-switcher {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: end;
+  }
+
+  .student-shell .retro-topbar.compact .mode-switcher a {
+    font-size: 0.75rem;
+    padding-left: 0.4rem;
+    padding-right: 0.4rem;
+  }
+
   .retro-brand small,
   .teacher-account span {
     display: none;
@@ -2878,6 +2932,10 @@ a:focus-visible {
   .teacher-console,
   .student-stage {
     padding: 0.9rem 0.8rem 5rem;
+  }
+
+  .student-shell .student-gate {
+    margin-top: 0.35rem;
   }
 
   .room-card-grid,

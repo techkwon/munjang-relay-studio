@@ -122,11 +122,27 @@ test("allows anonymous students to find and join rooms", async () => {
   const studentRoute = await readProjectFile("app/api/rooms/route.ts");
 
   assert.doesNotMatch(studentJoin, /requireChatGPTUser|getChatGPTUser/);
-  assert.match(studentJoin, /NO LOGIN · QUICK JOIN/);
+  assert.match(studentJoin, /로그인 없이 바로 참여/);
+  assert.match(studentJoin, /6자리 방 코드/);
+  assert.match(studentJoin, /로그인 없이 작가명만 입력/);
+  assert.match(studentJoin, /계정이나 이메일은 필요하지 않아요/);
   assert.match(studentJoin, /fetch\("\/api\/rooms"/);
   assert.match(studentJoin, /action: "join"/);
   assert.doesNotMatch(studentRoute, /requireChatGPTUser|getChatGPTUser/);
   assert.match(studentRoute, /const action = typeof body\.action === "string" \? body\.action : "join"/);
+});
+
+test("keeps local mode turn count at or above writer count", async () => {
+  const page = await readProjectFile("app/page.tsx");
+
+  assert.match(page, /const setupPlayers = useMemo\(\(\) => parsePlayers\(participantsInput\), \[participantsInput\]\)/);
+  assert.match(page, /const minimumTurnLimit = setupPlayers\.length > 6 \? 8 : 6/);
+  assert.match(page, /function updateParticipants\(value: string\)/);
+  assert.match(page, /if \(turnLimit < nextMinimum\)[\s\S]*setTurnLimit\(nextMinimum\)/);
+  assert.match(page, /function startGame\(\)[\s\S]*safeTurnLimit[\s\S]*nextPlayers\.length > turnLimit/);
+  assert.match(page, /onChange=\{\(event\) => updateParticipants\(event\.target\.value\)\}/);
+  assert.match(page, /disabled=\{setupPlayers\.length > 6\}/);
+  assert.match(page, /모두 한 번 이상 쓸 수 있도록 최소 \{minimumTurnLimit\}차례가 필요해요/);
 });
 
 test("creates normalized D1 tables with room participant and story-turn relations", async () => {
@@ -265,6 +281,58 @@ test("keeps participant bearer tokens out of polling URLs", async () => {
   assert.doesNotMatch(route, /searchParams\.get\("token"/);
 });
 
+test("clears expired restored student sessions and keeps a re-entry message visible", async () => {
+  const student = await readProjectFile("app/join/StudentJoin.tsx");
+
+  assert.match(student, /window\.localStorage\.getItem\(roomStorageKey\(initialCode\)\)/);
+  assert.match(student, /fetchRoom\(initialCode, restored\)\.then\(\(found\) => \{/);
+  assert.match(student, /if \(found\) return/);
+  assert.match(student, /window\.localStorage\.removeItem\(roomStorageKey\(initialCode\)\)/);
+  assert.match(student, /setSession\(null\)/);
+  assert.match(student, /setRoom\(null\)/);
+  assert.match(student, /setStep\("code"\)/);
+  assert.match(student, /참여 정보가 만료되었어요\. 방 코드를 다시 입력해 주세요\.", true/);
+});
+
+test("blocks writer join for non-lobby or full rooms and offers another-room recovery", async () => {
+  const student = await readProjectFile("app/join/StudentJoin.tsx");
+
+  assert.match(student, /const canJoinRoom = Boolean\([\s\S]*room\?\.status === "lobby"[\s\S]*availableHumanSlots/);
+  assert.match(student, /이 방은 이미 활동을 시작했습니다\. 다른 방 코드를 입력해 주세요\./);
+  assert.match(student, /사람 작가 자리가 모두 찼습니다\. 다른 방 코드를 입력해 주세요\./);
+  assert.match(student, /disabled=\{!canJoinRoom\}/);
+  assert.match(student, /role="alert">\{joinBlockReason\}/);
+  assert.match(student, /disabled=\{busy \|\| !name\.trim\(\) \|\| !canJoinRoom\}/);
+  assert.match(student, /function resetJoin\(\)[\s\S]*setStep\("code"\)/);
+  assert.match(student, /다른 방 코드 입력/);
+});
+
+test("keeps student status inline and preserves persistent errors", async () => {
+  const [student, css] = await Promise.all([
+    readProjectFile("app/join/StudentJoin.tsx"),
+    readProjectFile("app/globals.css"),
+  ]);
+
+  assert.match(student, /const \[statusPersistent, setStatusPersistent\] = useState\(false\)/);
+  assert.match(student, /const showStatus = useCallback\(\(message: string, persistent = false\) => \{/);
+  assert.match(student, /if \(!status \|\| statusPersistent\) return/);
+  assert.match(student, /data-persistent=\{statusPersistent \|\| undefined\}/);
+  assert.match(student, /className="retro-status student-status"/);
+  assert.match(css, /\.retro-status\.student-status \{[\s\S]*position: sticky;[\s\S]*top: 0\.65rem;/);
+  assert.match(css, /\.retro-status\.student-status\[data-persistent="true"\]/);
+});
+
+test("keeps navigation and common secondary controls at 44px minimum", async () => {
+  const css = await readProjectFile("app/globals.css");
+
+  assert.match(css, /\.mode-switcher a \{[\s\S]*min-height: 44px;/);
+  assert.match(css, /\.brand \{[\s\S]*min-height: 44px;/);
+  assert.match(css, /\.mobile-jump \{[\s\S]*min-height: 44px;/);
+  assert.match(css, /\.teacher-account a,\s*\.share-actions a,\s*\.share-actions button,\s*\.room-control-row > button,\s*\.link-button \{[\s\S]*min-height: 44px;/);
+  assert.match(css, /\.room-control-row \.retro-primary,\s*\.room-control-row \.retro-danger \{[\s\S]*min-height: 44px;/);
+  assert.match(css, /\.retro-primary,\s*\.retro-danger \{[\s\S]*min-height: 50px;/);
+});
+
 test("rejects student submissions outside the current human turn", async () => {
   const route = await readProjectFile("app/api/rooms/route.ts");
 
@@ -288,6 +356,40 @@ test("keeps AI generation behind server-only teacher auth", async () => {
   assert.match(aiRoute, /const AI_CLAIM_TTL_MS = 120_000/);
   assert.match(aiRoute, /ai_generation_claimed_at < \?/);
   assert.match(aiRoute, /minimizeClassroomText/);
+});
+
+test("keeps teacher quiet AI failures visible with retry actions", async () => {
+  const teacher = await readProjectFile("app/teacher/TeacherDashboard.tsx");
+
+  assert.match(teacher, /const \[aiFailure, setAiFailure\] = useState/);
+  assert.match(teacher, /const selectedAiFailure = selectedRoom && aiFailure\?\.roomId === selectedRoom\.id/);
+  assert.match(teacher, /const statusFailureAction =[\s\S]*analysisStatus === "failed"[\s\S]*aiGenerationStatus === "failed"/);
+  assert.match(teacher, /const retryAction = selectedAiFailure\?\.action \?\? statusFailureAction/);
+  assert.match(teacher, /setAiFailure\(\{ roomId, action, message \}\)/);
+  assert.match(teacher, /if \(!quiet\) setStatus\(message\)/);
+  assert.match(teacher, /className="retro-window teacher-alert" role="alert"/);
+  assert.match(teacher, /\$\{getActionLabel\(retryAction\)\} 다시 시도/);
+});
+
+test("provides teacher final story and report copy download and print actions", async () => {
+  const teacher = await readProjectFile("app/teacher/TeacherDashboard.tsx");
+
+  assert.match(teacher, /function getFinalStoryText\(room: Room\)/);
+  assert.match(teacher, /function getAnalysisReportText\(report: unknown\)/);
+  assert.match(teacher, /async function copyText\(kind: "story" \| "report"\)/);
+  assert.match(teacher, /function downloadText\(kind: "story" \| "report"\)/);
+  assert.match(teacher, /function printExports\(\)/);
+  assert.match(teacher, /navigator\.clipboard\.writeText\(text\)/);
+  assert.match(teacher, /makeDownload\(`\$\{selectedRoom\.code\}-\$\{kind === "story" \? "story" : "report"\}\.txt`, text\)/);
+  assert.match(teacher, /document\.createElement\("iframe"\)/);
+  assert.match(teacher, /const printDocument = printable\.contentDocument/);
+  assert.match(teacher, /printWindow\.print\(\)/);
+  assert.doesNotMatch(teacher, /window\.open\("", "_blank"/);
+  assert.match(teacher, /완성 작품 복사/);
+  assert.match(teacher, /완성 작품 다운로드/);
+  assert.match(teacher, /분석 보고서 복사/);
+  assert.match(teacher, /분석 보고서 다운로드/);
+  assert.match(teacher, /인쇄/);
 });
 
 test("uses Solar Pro 4 by default without exposing the API key to client code", async () => {
@@ -314,8 +416,8 @@ test("applies Retro Digital Y2K styling across local teacher and student routes"
     readProjectFile("app/globals.css"),
   ]);
 
-  assert.match(page, /<Link href="\/teacher">TEACHER<\/Link>/);
-  assert.match(page, /<Link href="\/join">STUDENT<\/Link>/);
+  assert.match(page, /<Link href="\/teacher">교사용<\/Link>/);
+  assert.match(page, /<Link href="\/join">학생용<\/Link>/);
   assert.match(teacher, /className="retro-shell teacher-shell"/);
   assert.match(student, /className="retro-shell student-shell"/);
   assert.match(css, /--y2k-cyan/);

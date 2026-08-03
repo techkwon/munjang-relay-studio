@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import QRCode from "qrcode";
@@ -43,6 +43,7 @@ type Room = {
   storySetup?: string | null;
   storyOpener?: string | null;
   seedSource?: string | null;
+  aiGenerationStatus?: string | null;
   analysisStatus?: string | null;
   analysisReport?: unknown;
   participants?: RoomWriter[];
@@ -122,6 +123,7 @@ function normalizeRoom(payload: unknown): Room | null {
     storySetup: typeof value.storySetup === "string" ? value.storySetup : null,
     storyOpener: typeof value.storyOpener === "string" ? value.storyOpener : null,
     seedSource: typeof value.seedSource === "string" ? value.seedSource : null,
+    aiGenerationStatus: typeof value.aiGenerationStatus === "string" ? value.aiGenerationStatus : null,
     analysisStatus: typeof value.analysisStatus === "string" ? value.analysisStatus : null,
     analysisReport: value.analysisReport,
     participants,
@@ -135,6 +137,77 @@ function formatCountdown(deadline: number | null, now: number) {
   if (!deadline) return "--:--";
   const seconds = Math.max(0, Math.ceil((deadline - now) / 1000));
   return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+function getActionLabel(action: "seed" | "continue" | "report") {
+  if (action === "seed") return "AI 첫 문장";
+  if (action === "continue") return "AI 이어쓰기";
+  return "AI 분석 보고서";
+}
+
+function getFinalStoryText(room: Room) {
+  const lines = [
+    room.storyTitle ?? room.title,
+    "",
+    room.storySetup ? `설정: ${room.storySetup}` : "",
+    room.storyOpener ? `첫 문장: ${room.storyOpener}` : "",
+    "",
+    ...(room.entries ?? []).map((entry) => `${entry.turnNumber}. ${entry.writerName}\n${entry.text}`),
+  ].filter(Boolean);
+  return lines.join("\n\n");
+}
+
+function getAnalysisReportText(report: unknown) {
+  if (!report || typeof report !== "object") return "";
+  const value = report as {
+    summary?: unknown;
+    collaborationHighlights?: unknown;
+    writers?: unknown;
+    groupSuggestion?: unknown;
+    disclaimer?: unknown;
+  };
+  const writerLines = Array.isArray(value.writers)
+    ? value.writers.map((writer) => {
+        const item = writer as Record<string, unknown>;
+        const strengths = Array.isArray(item.strengths) ? item.strengths.join(", ") : "";
+        return [
+          `- ${String(item.name ?? "작가")}`,
+          `  기여: ${String(item.contributionShare ?? 0)}% · ${String(item.paragraphs ?? 0)}문단 · ${String(item.characters ?? 0)}자`,
+          strengths ? `  장점: ${strengths}` : "",
+          item.nextStep ? `  다음 연습: ${String(item.nextStep)}` : "",
+        ].filter(Boolean).join("\n");
+      })
+    : [];
+  const highlights = Array.isArray(value.collaborationHighlights)
+    ? value.collaborationHighlights.map((item) => `- ${String(item)}`)
+    : [];
+  return [
+    "AI 글쓰기 분석 보고서",
+    "",
+    value.summary ? String(value.summary) : "",
+    highlights.length > 0 ? `협업 하이라이트\n${highlights.join("\n")}` : "",
+    writerLines.length > 0 ? `작가별 피드백\n${writerLines.join("\n")}` : "",
+    value.groupSuggestion ? `함께 해 볼 연습\n${String(value.groupSuggestion)}` : "",
+    value.disclaimer ? String(value.disclaimer) : "",
+  ].filter(Boolean).join("\n\n");
+}
+
+function makeDownload(filename: string, text: string) {
+  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 export function TeacherDashboard({
@@ -155,15 +228,33 @@ export function TeacherDashboard({
   const [orderMode, setOrderMode] = useState<"sequential" | "random">("sequential");
   const [status, setStatus] = useState("교실 서버에 연결하는 중입니다.");
   const [busy, setBusy] = useState(false);
+  const [aiBusyAction, setAiBusyAction] = useState<"seed" | "continue" | "report" | null>(null);
+  const [exportBusy, setExportBusy] = useState<"copy-story" | "download-story" | "copy-report" | "download-report" | "print" | null>(null);
+  const [aiFailure, setAiFailure] = useState<{ roomId: string; action: "seed" | "continue" | "report"; message: string } | null>(null);
   const [qrDataUrl, setQrDataUrl] = useState("");
   const [joinUrl, setJoinUrl] = useState("");
   const [now, setNow] = useState(() => Date.now());
+  const aiBusyRef = useRef<"seed" | "continue" | "report" | null>(null);
 
   const writers = selectedRoom?.participants ?? selectedRoom?.writers ?? [];
   const currentWriter = writers.find(
     (writer) => writer.position === selectedRoom?.currentWriterPosition,
   );
   const humanJoined = writers.filter((writer) => writer.kind === "human").length;
+  const currentAiTurn = Boolean(selectedRoom?.status === "active" && currentWriter?.kind === "ai");
+  const selectedAiFailure = selectedRoom && aiFailure?.roomId === selectedRoom.id ? aiFailure : null;
+  const statusFailureAction =
+    selectedRoom?.analysisStatus === "failed"
+      ? "report"
+      : selectedRoom?.aiGenerationStatus === "failed" && currentAiTurn
+        ? "continue"
+        : selectedRoom?.aiGenerationStatus === "failed" && selectedRoom?.status === "lobby"
+          ? "seed"
+          : null;
+  const retryAction = selectedAiFailure?.action ?? statusFailureAction;
+  const canExportStory = Boolean(selectedRoom && (selectedRoom.status === "complete" || selectedRoom.status === "closed") && getFinalStoryText(selectedRoom).trim());
+  const analysisText = selectedRoom ? getAnalysisReportText(selectedRoom.analysisReport) : "";
+  const canExportReport = Boolean(selectedRoom?.analysisStatus === "complete" && analysisText.trim());
 
   const loadRooms = useCallback(async (quiet = false) => {
     try {
@@ -261,6 +352,9 @@ export function TeacherDashboard({
   }, [status]);
 
   async function runAi(action: "seed" | "continue" | "report", roomId: string, quiet = false) {
+    if (aiBusyRef.current) return;
+    aiBusyRef.current = action;
+    setAiBusyAction(action);
     if (!quiet) setStatus(action === "report" ? "AI 협업 리포트를 작성하고 있습니다." : "SOLAR 작가가 문장을 준비하고 있습니다.");
     try {
       const response = await fetch("/api/ai", {
@@ -272,9 +366,88 @@ export function TeacherDashboard({
       if (!response.ok) throw new Error(getErrorMessage(payload, "AI 요청을 처리하지 못했습니다."));
       await loadRoom(roomId, true);
       await loadRooms(true);
+      setAiFailure(null);
       if (!quiet) setStatus("AI 작업이 완료되었습니다.");
     } catch (error) {
-      if (!quiet) setStatus(error instanceof Error ? error.message : "AI 요청을 처리하지 못했습니다.");
+      const message = error instanceof Error ? error.message : "AI 요청을 처리하지 못했습니다.";
+      setAiFailure({ roomId, action, message });
+      if (!quiet) setStatus(message);
+    } finally {
+      aiBusyRef.current = null;
+      setAiBusyAction(null);
+    }
+  }
+
+  async function copyText(kind: "story" | "report") {
+    if (!selectedRoom) return;
+    const text = kind === "story" ? getFinalStoryText(selectedRoom) : analysisText;
+    const label = kind === "story" ? "완성 작품" : "분석 보고서";
+    setExportBusy(kind === "story" ? "copy-story" : "copy-report");
+    try {
+      await navigator.clipboard.writeText(text);
+      setStatus(`${label}을 복사했습니다.`);
+    } catch {
+      setStatus(`${label}을 복사하지 못했습니다.`);
+    } finally {
+      setExportBusy(null);
+    }
+  }
+
+  function downloadText(kind: "story" | "report") {
+    if (!selectedRoom) return;
+    const text = kind === "story" ? getFinalStoryText(selectedRoom) : analysisText;
+    const label = kind === "story" ? "완성 작품" : "분석 보고서";
+    setExportBusy(kind === "story" ? "download-story" : "download-report");
+    try {
+      makeDownload(`${selectedRoom.code}-${kind === "story" ? "story" : "report"}.txt`, text);
+      setStatus(`${label} 파일을 내려받았습니다.`);
+    } catch {
+      setStatus(`${label} 파일을 만들지 못했습니다.`);
+    } finally {
+      setExportBusy(null);
+    }
+  }
+
+  function printExports() {
+    if (!selectedRoom) return;
+    setExportBusy("print");
+    const story = getFinalStoryText(selectedRoom);
+    const report = analysisText;
+    const printable = document.createElement("iframe");
+    printable.title = `${selectedRoom.code} 작품과 분석 보고서 인쇄`;
+    printable.style.position = "fixed";
+    printable.style.width = "0";
+    printable.style.height = "0";
+    printable.style.border = "0";
+    printable.style.right = "0";
+    printable.style.bottom = "0";
+
+    try {
+      document.body.appendChild(printable);
+      const printDocument = printable.contentDocument;
+      if (!printDocument) throw new Error("print document unavailable");
+      printDocument.open();
+      printDocument.write(`<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>${escapeHtml(selectedRoom.code)} 출력</title><style>body{font-family:system-ui,sans-serif;max-width:760px;margin:40px auto;padding:0 24px;color:#101426}pre{font:16px/1.8 serif;white-space:pre-wrap;overflow-wrap:anywhere}</style></head><body><pre>${escapeHtml([story, report].filter(Boolean).join("\n\n---\n\n"))}</pre></body></html>`);
+      printDocument.close();
+
+      window.setTimeout(() => {
+        try {
+          const printWindow = printable.contentWindow;
+          if (!printWindow) throw new Error("print window unavailable");
+          printWindow.focus();
+          printWindow.print();
+          setStatus("작품과 분석 보고서 인쇄를 열었습니다.");
+        } catch {
+          setStatus("인쇄를 열지 못했습니다. 다운로드한 파일을 인쇄해 주세요.");
+        } finally {
+          setExportBusy(null);
+          window.setTimeout(() => printable.remove(), 500);
+        }
+      }, 100);
+    } catch {
+      printable.remove();
+      setStatus("인쇄를 준비하지 못했습니다. 다운로드한 파일을 인쇄해 주세요.");
+      setExportBusy(null);
     }
   }
 
@@ -362,12 +535,12 @@ export function TeacherDashboard({
         <Link className="retro-brand" href="/">
           <span aria-hidden="true">잇</span>
           <strong>문장잇기</strong>
-          <small>TEACHER OS</small>
+          <small>교사용</small>
         </Link>
         <nav className="mode-switcher" aria-label="문장잇기 모드">
-          <Link href="/">LOCAL</Link>
-          <Link href="/teacher" aria-current="page">TEACHER</Link>
-          <Link href="/join">STUDENT</Link>
+          <Link href="/">한 화면</Link>
+          <Link href="/teacher" aria-current="page">교사용</Link>
+          <Link href="/join">학생용</Link>
         </nav>
         <div className="teacher-account">
           <span>{user.displayName}</span>
@@ -550,10 +723,49 @@ export function TeacherDashboard({
                       <button className="retro-danger" type="button" disabled={busy} onClick={() => void controlRoom("close")}>활동 마감</button>
                     )}
                     {!selectedRoom.storyOpener && <button type="button" onClick={() => void runAi("seed", selectedRoom.id)}>AI 첫 문장 다시 요청</button>}
+                    {currentAiTurn && (
+                      <button type="button" disabled={Boolean(aiBusyAction)} onClick={() => void runAi("continue", selectedRoom.id)}>
+                        {aiBusyAction === "continue" ? "AI 이어쓰기 중…" : "AI 차례 이어쓰기"}
+                      </button>
+                    )}
                     {(selectedRoom.status === "complete" || selectedRoom.status === "closed") &&
                       (selectedRoom.entries?.length ?? 0) > 0 && selectedRoom.analysisStatus !== "complete" && (
-                      <button type="button" onClick={() => void runAi("report", selectedRoom.id)}>AI 분석 보고서 만들기</button>
+                      <button type="button" disabled={Boolean(aiBusyAction)} onClick={() => void runAi("report", selectedRoom.id)}>
+                        {aiBusyAction === "report" ? "분석 중…" : selectedRoom.analysisStatus === "failed" ? "AI 분석 다시 만들기" : "AI 분석 보고서 만들기"}
+                      </button>
                     )}
+                  </div>
+
+                  {(selectedAiFailure || statusFailureAction) && retryAction && (
+                    <div className="retro-window teacher-alert" role="alert">
+                      <div className="window-titlebar">
+                        <span>AI_ERROR.LOG</span>
+                        <i aria-hidden="true">● ● ●</i>
+                      </div>
+                      <strong>{getActionLabel(retryAction)} 작업을 완료하지 못했습니다.</strong>
+                      <p>{selectedAiFailure?.message ?? "AI 작업이 실패 상태입니다. 다시 시도해 주세요."}</p>
+                      <button type="button" disabled={Boolean(aiBusyAction)} onClick={() => void runAi(retryAction, selectedRoom.id)}>
+                        {aiBusyAction === retryAction ? "다시 시도 중…" : `${getActionLabel(retryAction)} 다시 시도`}
+                      </button>
+                    </div>
+                  )}
+
+                  <div className="room-control-row" aria-label="완성 자료 내보내기">
+                    <button type="button" disabled={!canExportStory || exportBusy === "copy-story"} onClick={() => void copyText("story")}>
+                      {exportBusy === "copy-story" ? "복사 중…" : "완성 작품 복사"}
+                    </button>
+                    <button type="button" disabled={!canExportStory || exportBusy === "download-story"} onClick={() => downloadText("story")}>
+                      {exportBusy === "download-story" ? "저장 중…" : "완성 작품 다운로드"}
+                    </button>
+                    <button type="button" disabled={!canExportReport || exportBusy === "copy-report"} onClick={() => void copyText("report")}>
+                      {exportBusy === "copy-report" ? "복사 중…" : "분석 보고서 복사"}
+                    </button>
+                    <button type="button" disabled={!canExportReport || exportBusy === "download-report"} onClick={() => downloadText("report")}>
+                      {exportBusy === "download-report" ? "저장 중…" : "분석 보고서 다운로드"}
+                    </button>
+                    <button type="button" disabled={(!canExportStory && !canExportReport) || exportBusy === "print"} onClick={printExports}>
+                      {exportBusy === "print" ? "인쇄 준비 중…" : "인쇄"}
+                    </button>
                   </div>
 
                   <div className="live-story-mini">

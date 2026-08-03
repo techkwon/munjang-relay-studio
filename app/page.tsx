@@ -241,6 +241,8 @@ export default function Home() {
   const currentPlayer = players[turnIndex] ?? "다음 작가";
   const genreInfo = GENRES.find((item) => item.id === genre) ?? GENRES[0];
   const seedGenreInfo = GENRES.find((item) => item.id === seed.genre) ?? GENRES[0];
+  const setupPlayers = useMemo(() => parsePlayers(participantsInput), [participantsInput]);
+  const minimumTurnLimit = setupPlayers.length > 6 ? 8 : 6;
   const progress = phase === "complete" ? 100 : (turnNumber / turnLimit) * 100;
 
   const storyText = useMemo(() => {
@@ -411,6 +413,8 @@ export default function Home() {
 
   function startGame() {
     const nextPlayers = parsePlayers(participantsInput);
+    const safeTurnLimit = nextPlayers.length > turnLimit ? (nextPlayers.length > 6 ? 8 : 6) : turnLimit;
+    if (safeTurnLimit !== turnLimit) setTurnLimit(safeTurnLimit);
     setPlayers(nextPlayers);
     setTurnIndex(0);
     setTurnNumber(1);
@@ -426,6 +430,16 @@ export default function Home() {
       scrollToTop();
       draftRef.current?.focus({ preventScroll: true });
     }, 80);
+  }
+
+  function updateParticipants(value: string) {
+    const nextPlayers = parsePlayers(value);
+    const nextMinimum = nextPlayers.length > 6 ? 8 : 6;
+    setParticipantsInput(value);
+    if (turnLimit < nextMinimum) {
+      setTurnLimit(nextMinimum);
+      setStatus(`${nextPlayers.length}명 모두 한 번씩 쓸 수 있도록 ${nextMinimum}차례로 맞췄어요.`);
+    }
   }
 
   function moveToNextTurn(text?: string) {
@@ -543,9 +557,9 @@ export default function Home() {
         </button>
         <div className="topbar-actions">
           <nav className="mode-switcher" aria-label="문장잇기 모드">
-            <Link href="/" aria-current="page">LOCAL</Link>
-            <Link href="/teacher">TEACHER</Link>
-            <Link href="/join">STUDENT</Link>
+            <Link href="/" aria-current="page">한 화면</Link>
+            <Link href="/teacher">교사용</Link>
+            <Link href="/join">학생용</Link>
           </nav>
           <div className={`privacy-note ${storageAvailable ? "" : "is-warning"}`}>
             <span className="status-dot" aria-hidden="true" />
@@ -559,7 +573,7 @@ export default function Home() {
         {phase === "setup" && (
           <section className="setup-view" aria-labelledby="hero-title">
             <div className="hero-copy">
-              <p className="eyebrow">LOCAL MODE · ONE DEVICE</p>
+              <p className="eyebrow">한 화면 모드 · 기기 1대</p>
               <h1 id="hero-title">
                 한 사람이 쓰고,
                 <span>다음 사람이 상상해요.</span>
@@ -625,7 +639,7 @@ export default function Home() {
                 id="participants"
                 className="name-input"
                 value={participantsInput}
-                onChange={(event) => setParticipantsInput(event.target.value)}
+                onChange={(event) => updateParticipants(event.target.value)}
                 placeholder={"민지\n서준\n지우"}
                 rows={3}
                 maxLength={120}
@@ -654,7 +668,7 @@ export default function Home() {
                 <label>
                   <span>총 차례</span>
                   <select value={turnLimit} onChange={(event) => setTurnLimit(Number(event.target.value))}>
-                    <option value={6}>6차례 · 짧게</option>
+                    <option value={6} disabled={setupPlayers.length > 6}>6차례 · 짧게</option>
                     <option value={8}>8차례 · 알맞게</option>
                     <option value={10}>10차례 · 길게</option>
                   </select>
@@ -668,6 +682,9 @@ export default function Home() {
                   </select>
                 </label>
               </div>
+              <p className="field-hint" role="status">
+                {setupPlayers.length}명의 작가가 모두 한 번 이상 쓸 수 있도록 최소 {minimumTurnLimit}차례가 필요해요.
+              </p>
 
               <button className="primary-button start-button" type="submit">
                 <span>첫 문장 뽑기</span>

@@ -170,7 +170,8 @@ export function StudentJoin() {
   const [session, setSession] = useState<StudentSession | null>(null);
   const [step, setStep] = useState<"code" | "name" | "room">("code");
   const [draft, setDraft] = useState("");
-  const [status, setStatus] = useState("방 코드를 입력해 주세요.");
+  const [status, setStatus] = useState("");
+  const [statusPersistent, setStatusPersistent] = useState(false);
   const [busy, setBusy] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const draftRef = useRef<HTMLTextAreaElement>(null);
@@ -185,6 +186,23 @@ export function StudentJoin() {
     me.id === currentWriter.id,
   );
   const report = useMemo(() => parseAnalysis(room?.analysisReport), [room?.analysisReport]);
+  const canJoinRoom = Boolean(
+    room?.status === "lobby" && (room.availableHumanSlots ?? 0) > 0,
+  );
+  const joinBlockReason = !room
+    ? "방 정보를 다시 확인해 주세요."
+    : room.status !== "lobby"
+      ? room.status === "closed" || room.status === "complete"
+        ? "이 방의 활동은 이미 마감되었습니다. 다른 방 코드를 입력해 주세요."
+        : "이 방은 이미 활동을 시작했습니다. 다른 방 코드를 입력해 주세요."
+      : (room.availableHumanSlots ?? 0) <= 0
+        ? "사람 작가 자리가 모두 찼습니다. 다른 방 코드를 입력해 주세요."
+        : "";
+
+  const showStatus = useCallback((message: string, persistent = false) => {
+    setStatus(message);
+    setStatusPersistent(persistent);
+  }, []);
 
   const fetchRoom = useCallback(async (
     roomCode: string,
@@ -206,13 +224,13 @@ export function StudentJoin() {
       const nextRoom = normalizeRoom(payload);
       if (!nextRoom) throw new Error("방 정보를 확인하지 못했습니다.");
       setRoom(nextRoom);
-      if (!quiet) setStatus(`ROOM ${nextRoom.code}에 연결했습니다.`);
+      if (!quiet) showStatus(`${nextRoom.code} 방을 찾았습니다.`);
       return nextRoom;
     } catch (error) {
-      if (!quiet) setStatus(error instanceof Error ? error.message : "방을 찾지 못했습니다.");
+      if (!quiet) showStatus(error instanceof Error ? error.message : "방을 찾지 못했습니다.", true);
       return null;
     }
-  }, []);
+  }, [showStatus]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -231,7 +249,18 @@ export function StudentJoin() {
         setSession(restored);
         setName(restored.name);
         setStep("room");
-        void fetchRoom(initialCode, restored);
+        void fetchRoom(initialCode, restored).then((found) => {
+          if (found) return;
+          try {
+            window.localStorage.removeItem(roomStorageKey(initialCode));
+          } catch {
+            // The student can still rejoin even when storage is unavailable.
+          }
+          setSession(null);
+          setRoom(null);
+          setStep("code");
+          showStatus("참여 정보가 만료되었어요. 방 코드를 다시 입력해 주세요.", true);
+        });
       } else {
         void fetchRoom(initialCode).then((found) => {
           if (found) setStep("name");
@@ -239,7 +268,7 @@ export function StudentJoin() {
       }
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [fetchRoom]);
+  }, [fetchRoom, showStatus]);
 
   useEffect(() => {
     if (step !== "room" || !session || !code) return;
@@ -253,27 +282,27 @@ export function StudentJoin() {
   useEffect(() => {
     if (!isMyTurn) return;
     const timer = window.setTimeout(() => {
-      setStatus("지금 내 차례입니다. 이어질 문단을 써 주세요.");
+      showStatus("지금 내 차례예요. 이어질 문단을 써 주세요.");
       draftRef.current?.focus();
     }, 60);
     return () => window.clearTimeout(timer);
-  }, [isMyTurn, room?.currentTurn]);
+  }, [isMyTurn, room?.currentTurn, showStatus]);
 
   useEffect(() => {
-    if (!status) return;
-    const timer = window.setTimeout(() => setStatus(""), 5000);
+    if (!status || statusPersistent) return;
+    const timer = window.setTimeout(() => setStatus(""), 7000);
     return () => window.clearTimeout(timer);
-  }, [status]);
+  }, [status, statusPersistent]);
 
   async function checkCode(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const roomCode = normalizeCode(code);
     if (roomCode.length !== 6) {
-      setStatus("6자리 방 코드를 확인해 주세요.");
+      showStatus("6자리 방 코드를 확인해 주세요.", true);
       return;
     }
     setBusy(true);
-    setStatus("방을 찾고 있습니다.");
+    showStatus("방을 찾고 있어요.");
     const found = await fetchRoom(roomCode);
     setBusy(false);
     if (found) {
@@ -286,12 +315,16 @@ export function StudentJoin() {
   async function joinRoom(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const cleanName = name.trim();
+    if (!canJoinRoom) {
+      showStatus(joinBlockReason, true);
+      return;
+    }
     if (!cleanName) {
-      setStatus("활동에서 사용할 작가명을 입력해 주세요.");
+      showStatus("활동에서 사용할 작가명을 입력해 주세요.", true);
       return;
     }
     setBusy(true);
-    setStatus("작가 자리를 준비하고 있습니다.");
+    showStatus("작가 자리를 준비하고 있어요.");
     try {
       const response = await fetch("/api/rooms", {
         method: "POST",
@@ -311,9 +344,9 @@ export function StudentJoin() {
       setSession(nextSession);
       setStep("room");
       await fetchRoom(code, nextSession, true);
-      setStatus(`${cleanName} 작가로 참여했습니다.`);
+      showStatus(`${cleanName} 작가로 참여했습니다.`);
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "방에 참여하지 못했습니다.");
+      showStatus(error instanceof Error ? error.message : "방에 참여하지 못했습니다.", true);
     } finally {
       setBusy(false);
     }
@@ -322,11 +355,11 @@ export function StudentJoin() {
   async function submitDraft() {
     const cleanText = draft.trim();
     if (!session || !room || !isMyTurn || !cleanText) {
-      setStatus(cleanText ? "현재 차례를 다시 확인해 주세요." : "한 문장 이상 적어 주세요.");
+      showStatus(cleanText ? "현재 차례를 다시 확인해 주세요." : "한 문장 이상 적어 주세요.", true);
       return;
     }
     setBusy(true);
-    setStatus("문단을 이야기 뒤에 붙이고 있습니다.");
+    showStatus("문단을 이야기 뒤에 붙이고 있어요.");
     try {
       const response = await fetch("/api/rooms", {
         method: "POST",
@@ -344,9 +377,9 @@ export function StudentJoin() {
       if (!response.ok) throw new Error(getErrorMessage(payload, "문단을 제출하지 못했습니다."));
       setDraft("");
       await fetchRoom(code, session, true);
-      setStatus("문단을 붙였습니다. 다음 작가에게 차례가 넘어갔어요.");
+      showStatus("문단을 붙였습니다. 다음 작가에게 차례가 넘어갔어요.");
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "문단을 제출하지 못했습니다.");
+      showStatus(error instanceof Error ? error.message : "문단을 제출하지 못했습니다.", true);
       await fetchRoom(code, session, true);
     } finally {
       setBusy(false);
@@ -360,10 +393,18 @@ export function StudentJoin() {
       .join("\n\n");
     try {
       await navigator.clipboard.writeText(body);
-      setStatus("완성 작품을 복사했습니다.");
+      showStatus("완성 작품을 복사했습니다.");
     } catch {
-      setStatus("복사하지 못했습니다. 원고를 길게 눌러 선택해 주세요.");
+      showStatus("복사하지 못했습니다. 원고를 길게 눌러 선택해 주세요.", true);
     }
+  }
+
+  function resetJoin() {
+    setSession(null);
+    setRoom(null);
+    setName("");
+    setStep("code");
+    showStatus("새 방 코드를 입력해 주세요.");
   }
 
   const roomDone = room?.status === "complete" || room?.status === "closed";
@@ -374,25 +415,26 @@ export function StudentJoin() {
       <a className="skip-link" href="#student-main">본문으로 바로 가기</a>
       <header className="retro-topbar compact">
         <Link className="retro-brand" href="/">
-          <span aria-hidden="true">잇</span><strong>문장잇기</strong><small>STUDENT LINK</small>
+          <span aria-hidden="true">잇</span><strong>문장잇기</strong><small>학생용</small>
         </Link>
         <nav className="mode-switcher" aria-label="문장잇기 모드">
-          <Link href="/">LOCAL</Link>
-          <Link href="/teacher">TEACHER</Link>
-          <Link href="/join" aria-current="page">STUDENT</Link>
+          <Link href="/">한 화면</Link>
+          <Link href="/teacher">교사용</Link>
+          <Link href="/join" aria-current="page">학생용</Link>
         </nav>
       </header>
 
       <div id="student-main" className="student-stage">
+        <p className="retro-status student-status" data-persistent={statusPersistent || undefined} aria-live="polite" aria-atomic="true">{status}</p>
         {step === "code" && (
           <section className="retro-window student-gate" aria-labelledby="join-title">
-            <div className="window-titlebar"><span>ROOM_CONNECT.EXE</span><i aria-hidden="true">● ● ●</i></div>
+            <div className="window-titlebar"><span>방 연결</span><i aria-hidden="true">● ● ●</i></div>
             <form onSubmit={checkCode}>
-              <p className="terminal-kicker">NO LOGIN · QUICK JOIN</p>
+              <p className="terminal-kicker">로그인 없이 바로 참여</p>
               <h1 id="join-title">방 코드를 입력하세요.</h1>
               <p>교사 화면의 6자리 코드나 QR 링크로 바로 참여할 수 있어요.</p>
               <label className="retro-field room-code-field">
-                <span>ROOM CODE</span>
+                <span>6자리 방 코드</span>
                 <input
                   value={code}
                   onChange={(event) => setCode(normalizeCode(event.target.value))}
@@ -411,23 +453,30 @@ export function StudentJoin() {
 
         {step === "name" && room && (
           <section className="retro-window student-gate" aria-labelledby="name-title">
-            <div className="window-titlebar"><span>WRITER_LOGIN.EXE</span><i aria-hidden="true">● ● ●</i></div>
+            <div className="window-titlebar"><span>작가 입장</span><i aria-hidden="true">● ● ●</i></div>
             <form onSubmit={joinRoom}>
-              <span className="status-chip status-lobby">ROOM {room.code}</span>
-              <p className="terminal-kicker">NO LOGIN · TOKEN ENTRY</p>
+              <span className={`status-chip status-${room.status}`}>방 {room.code}</span>
+              <p className="terminal-kicker">로그인 없이 작가명만 입력</p>
               <h1 id="name-title">작가명을 정해 주세요.</h1>
-              <p><strong>ROOM {room.code}</strong>에서 사용할 이름입니다. 계정이나 이메일은 필요하지 않아요.</p>
-              <label className="retro-field">
-                <span>나의 작가명</span>
-                <input value={name} onChange={(event) => setName(event.target.value)} placeholder="예: 반짝연필" maxLength={20} autoFocus />
-              </label>
-              <div className="join-room-summary">
-                <span>사람 자리 {room.humanWriterCount}명</span>
-                <span>현재 접속 {room.participantCount ?? 0}명</span>
-                <span>남은 자리 {room.availableHumanSlots ?? room.humanWriterCount}개</span>
-              </div>
-              <button className="retro-primary" type="submit" disabled={busy || !name.trim()}>{busy ? "입장 중…" : "작가로 입장"}</button>
-              <button className="link-button" type="button" onClick={() => setStep("code")}>다른 방 코드 입력</button>
+              <p><strong>{room.code} 방</strong>에서 사용할 이름입니다. 계정이나 이메일은 필요하지 않아요.</p>
+              {!canJoinRoom && <p className="join-blocked" role="alert">{joinBlockReason}</p>}
+              {canJoinRoom ? (
+                <>
+                  <label className="retro-field">
+                    <span>나의 작가명</span>
+                    <input value={name} onChange={(event) => setName(event.target.value)} placeholder="예: 반짝연필" maxLength={20} autoFocus disabled={!canJoinRoom} />
+                  </label>
+                  <div className="join-room-summary">
+                    <span>사람 자리 {room.humanWriterCount}명</span>
+                    <span>현재 접속 {room.participantCount ?? 0}명</span>
+                    <span>남은 자리 {room.availableHumanSlots ?? room.humanWriterCount}개</span>
+                  </div>
+                  <button className="retro-primary" type="submit" disabled={busy || !name.trim() || !canJoinRoom}>{busy ? "입장 중…" : "작가로 입장"}</button>
+                  <button className="link-button" type="button" onClick={resetJoin}>다른 방 코드 입력</button>
+                </>
+              ) : (
+                <button className="retro-primary" type="button" onClick={resetJoin}>다른 방 코드 입력</button>
+              )}
             </form>
           </section>
         )}
@@ -437,17 +486,17 @@ export function StudentJoin() {
             <div className="student-room-head">
               <div>
                 <span className={`status-chip status-${room.status}`}>{roomDone ? "작품 완성" : room.status === "active" ? "활동 중" : "입장 대기"}</span>
-                <p className="terminal-kicker">ROOM {room.code} · {room.orderMode === "random" ? "RANDOM ORDER" : "SEQUENTIAL"}</p>
+                <p className="terminal-kicker">방 {room.code} · {room.orderMode === "random" ? "랜덤 순서" : "차례대로"}</p>
                 <h1 id="room-title">{room.storyTitle || room.title}</h1>
               </div>
               {roomDone ? (
                 <div className="student-timer is-finished" aria-label="작품 완성">
-                  <span>FINAL</span>
+                  <span>작품</span>
                   <strong>완성</strong>
                 </div>
               ) : (
                 <div className="student-timer" role="timer" aria-label={`남은 시간 ${formatCountdown(room.turnExpiresAt, now)}`}>
-                  <span>TURN {Math.min(room.currentTurn, room.turnLimit)} / {room.turnLimit}</span>
+                  <span>{Math.min(room.currentTurn, room.turnLimit)} / {room.turnLimit} 차례</span>
                   <strong>{formatCountdown(room.turnExpiresAt, now)}</strong>
                 </div>
               )}
@@ -469,17 +518,17 @@ export function StudentJoin() {
 
             {room.status === "lobby" && (
               <div className="retro-window waiting-window">
-                <div className="window-titlebar"><span>WAITING_ROOM.SYS</span><i aria-hidden="true">● ● ●</i></div>
+                <div className="window-titlebar"><span>입장 대기</span><i aria-hidden="true">● ● ●</i></div>
                 <div><span className="waiting-pulse" aria-hidden="true" /><h2>교사가 활동을 시작할 때까지 기다려 주세요.</h2><p>{room.participantCount ?? writers.filter((writer) => writer.kind === "human").length}명의 사람 작가가 접속했습니다.</p></div>
               </div>
             )}
 
             {room.status === "active" && !isMyTurn && (
               <div className="retro-window waiting-window">
-                <div className="window-titlebar"><span>{currentWriter?.kind === "ai" ? "SOLAR_IS_WRITING.SYS" : "NEXT_TURN.SYS"}</span><i aria-hidden="true">● ● ●</i></div>
+                <div className="window-titlebar"><span>{currentWriter?.kind === "ai" ? "AI 작가가 쓰는 중" : "다음 작가 차례"}</span><i aria-hidden="true">● ● ●</i></div>
                 <div>
                   <span className="waiting-pulse" aria-hidden="true" />
-                  <p className="terminal-kicker">CURRENT WRITER</p>
+                  <p className="terminal-kicker">지금 쓰는 작가</p>
                   <h2>{currentWriter?.name ?? currentWriter?.displayName ?? "다음 작가"}의 차례입니다.</h2>
                   <p>{currentWriter?.kind === "ai" ? "SOLAR 작가가 앞 문단을 읽고 다음 장면을 쓰고 있어요." : "내 차례가 오면 작성 화면이 자동으로 열립니다."}</p>
                 </div>
@@ -489,9 +538,9 @@ export function StudentJoin() {
             {room.status === "active" && isMyTurn && (
               <div className="student-writing-grid">
                 <article className="retro-window student-writing-window">
-                  <div className="window-titlebar"><span>MY_TURN.TXT</span><i aria-hidden="true">● ● ●</i></div>
+                  <div className="window-titlebar"><span>내 차례</span><i aria-hidden="true">● ● ●</i></div>
                   <div className="student-writing-body">
-                    <p className="my-turn-badge">NOW WRITING · {session.name}</p>
+                    <p className="my-turn-badge">지금 쓰기 · {session.name}</p>
                     {room.storySetup && <p className="story-setup">{room.storySetup}</p>}
                     <label htmlFor="student-draft">이어질 문단</label>
                     <textarea
@@ -515,9 +564,9 @@ export function StudentJoin() {
               <div className="final-room-grid">
                 <LiveStory room={room} final />
                 <article className="retro-window report-window">
-                  <div className="window-titlebar"><span>HUMAN_WRITER_REPORT.AI</span><i aria-hidden="true">● ● ●</i></div>
+                  <div className="window-titlebar"><span>사람 작가 성장 리포트</span><i aria-hidden="true">● ● ●</i></div>
                   <div className="report-body">
-                    <p className="terminal-kicker">SOLAR COLLABORATION REPORT</p>
+                    <p className="terminal-kicker">AI 협업 분석</p>
                     <h2>사람 작가 기여도·글쓰기 리포트</h2>
                     <p className="report-note">AI가 작품 속 문장을 바탕으로 찾은 성장 참고 자료입니다. 순위나 성적이 아닙니다.</p>
                     {report ? (
@@ -528,7 +577,7 @@ export function StudentJoin() {
                             <article key={`${writer.name ?? writer.writerName}-${index}`}>
                               <div><strong>{writer.name ?? writer.writerName ?? "작가"}</strong><span>{typeof writer.contributionShare === "number" ? `${Math.round(writer.contributionShare)}% 기여` : `${writer.paragraphs ?? 0}문단`}</span></div>
                               {(writer.strengths ?? []).length > 0 && <ul>{writer.strengths?.map((strength) => <li key={strength}>{strength}</li>)}</ul>}
-                              {writer.nextStep && <p><b>NEXT</b> {writer.nextStep}</p>}
+                              {writer.nextStep && <p><b>다음 연습</b> {writer.nextStep}</p>}
                             </article>
                           ))}
                         </div>
@@ -545,8 +594,6 @@ export function StudentJoin() {
           </section>
         )}
       </div>
-
-      <p className="retro-status" aria-live="polite" aria-atomic="true">{status}</p>
     </main>
   );
 }
@@ -554,9 +601,9 @@ export function StudentJoin() {
 function LiveStory({ room, final = false }: { room: Room; final?: boolean }) {
   return (
     <aside className={`retro-window live-story-window ${final ? "is-final" : ""}`} aria-labelledby={final ? "final-story-title" : "live-story-title"}>
-      <div className="window-titlebar"><span>{final ? "FINAL_STORY.DOC" : "LIVE_MANUSCRIPT.DOC"}</span><i aria-hidden="true">● ● ●</i></div>
+      <div className="window-titlebar"><span>{final ? "완성 작품" : "이어 쓰는 원고"}</span><i aria-hidden="true">● ● ●</i></div>
       <div className="live-story-body">
-        <p className="terminal-kicker">{room.genre.toUpperCase()} · HUMAN + AI</p>
+        <p className="terminal-kicker">{room.genre.toUpperCase()} · 사람 + AI 협업</p>
         <h2 id={final ? "final-story-title" : "live-story-title"}>{room.storyTitle || room.title}</h2>
         {room.storyOpener && <p className="story-opener">{room.storyOpener}</p>}
         {(room.entries ?? []).map((entry) => (
