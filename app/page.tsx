@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { ThemeToggle } from "@/app/components/ThemeToggle";
 import {
   useCallback,
   useEffect,
@@ -230,6 +231,7 @@ export default function Home() {
   const [storageReady, setStorageReady] = useState(false);
   const [storageAvailable, setStorageAvailable] = useState(true);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [showLocalSetup, setShowLocalSetup] = useState(false);
   const draftRef = useRef<HTMLTextAreaElement>(null);
   const resetOpenerRef = useRef<HTMLElement | null>(null);
   const resetDialogRef = useRef<HTMLDivElement>(null);
@@ -432,6 +434,18 @@ export default function Home() {
     }, 80);
   }
 
+  function revealLocalSetup() {
+    setShowLocalSetup(true);
+    setStatus("PC 1대로 진행할 작가와 규칙을 정해 주세요.");
+    window.setTimeout(() => {
+      document.getElementById("setup-card")?.scrollIntoView({
+        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+        block: "start",
+      });
+      document.getElementById("participants")?.focus({ preventScroll: true });
+    }, 60);
+  }
+
   function updateParticipants(value: string) {
     const nextPlayers = parsePlayers(value);
     const nextMinimum = nextPlayers.length > 6 ? 8 : 6;
@@ -535,6 +549,7 @@ export default function Home() {
     setTurnNumber(1);
     setTurnIndex(0);
     setShowResetConfirm(false);
+    setShowLocalSetup(false);
     setStatus("새 이야기를 준비할 수 있어요.");
     window.setTimeout(scrollToTop, 60);
   }
@@ -556,11 +571,7 @@ export default function Home() {
           <span>문장잇기</span>
         </button>
         <div className="topbar-actions">
-          <nav className="mode-switcher" aria-label="문장잇기 모드">
-            <Link href="/" aria-current="page">한 화면</Link>
-            <Link href="/teacher">교사용</Link>
-            <Link href="/join">학생용</Link>
-          </nav>
+          <ThemeToggle />
           <div className={`privacy-note ${storageAvailable ? "" : "is-warning"}`}>
             <span className="status-dot" aria-hidden="true" />
             <span className="privacy-prefix">로그인 없이 · </span>
@@ -571,127 +582,107 @@ export default function Home() {
 
       <div id="main-content">
         {phase === "setup" && (
-          <section className="setup-view" aria-labelledby="hero-title">
+          <section className={`setup-view ${showLocalSetup ? "has-local-setup" : "is-choice-only"}`} aria-labelledby="hero-title">
             <div className="hero-copy">
-              <p className="eyebrow">한 화면 모드 · 기기 1대</p>
+              <p className="eyebrow">RETRO RELAY STUDIO</p>
               <h1 id="hero-title">
-                한 사람이 쓰고,
-                <span>다음 사람이 상상해요.</span>
+                교실에서 바로 여는
+                <span>릴레이 소설방</span>
               </h1>
               <p className="hero-description">
-                이름과 분위기를 고르면 첫 문장과 이야기 장치가 나타납니다.
-                한 문단씩 넘겨 보세요. 예상 못 한 결말이 기다리고 있어요.
+                선생님은 방을 열고, 학생은 코드로 들어옵니다.
+                사람과 AI 작가를 섞어 한 문단씩 이어 쓰세요.
               </p>
-              <div className="hero-mode-links" aria-label="온라인 교실 모드">
+              <div className="hero-mode-links" aria-label="시작 방식 선택">
                 <Link href="/teacher">교사용 방 만들기 <span aria-hidden="true">↗</span></Link>
-                <Link href="/join">학생용 방 참여 <span aria-hidden="true">→</span></Link>
+                <Link href="/join">학생용 참여하기 <span aria-hidden="true">→</span></Link>
               </div>
-              <a className="mobile-jump" href="#setup-card">
-                작가와 규칙 정하기 <span aria-hidden="true">↓</span>
-              </a>
-
-              <div className="hero-proof" aria-label="서비스 특징">
-                <div>
-                  <strong>2–8명</strong>
-                  <span>한 화면에서 함께</span>
-                </div>
-                <div>
-                  <strong>10가지</strong>
-                  <span>이야기 장치</span>
-                </div>
-                <div>
-                  <strong>0개</strong>
-                  <span>필요한 계정</span>
-                </div>
-              </div>
-
-              <div className="paper-stack" aria-hidden="true">
-                <div className="paper-card paper-card-back">그리고 그때—</div>
-                <div className="paper-card paper-card-front">
-                  <span>이번 문단의 장치</span>
-                  <strong>평범한 물건 하나가 결정적인 단서가 됩니다.</strong>
-                  <i>다음 작가에게 →</i>
-                </div>
-              </div>
+              <button className="mobile-jump" type="button" onClick={revealLocalSetup}>
+                PC 1대로 시작 <span aria-hidden="true">↓</span>
+              </button>
             </div>
 
-            <form
-              id="setup-card"
-              className="setup-card"
-              onSubmit={(event) => {
-                event.preventDefault();
-                startGame();
-              }}
-            >
-              <div className="card-heading">
-                <div>
-                  <p>LOCAL_SETUP.EXE</p>
-                  <h2>오늘의 작가들을 모아 볼까요?</h2>
+            {showLocalSetup && (
+              <form
+                id="setup-card"
+                className="setup-card"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  startGame();
+                }}
+              >
+                <div className="card-heading">
+                  <div>
+                    <p>LOCAL_SETUP.EXE</p>
+                    <h2>오늘의 작가들을 모아 볼까요?</h2>
+                  </div>
+                  <span className="setup-badge">약 10초</span>
                 </div>
-                <span className="setup-badge">약 10초</span>
-              </div>
 
-              <label className="field-label" htmlFor="participants">
-                <span>작가 이름</span>
-                <small>줄바꿈 또는 쉼표로 구분 · 최대 8명</small>
-              </label>
-              <textarea
-                id="participants"
-                className="name-input"
-                value={participantsInput}
-                onChange={(event) => updateParticipants(event.target.value)}
-                placeholder={"민지\n서준\n지우"}
-                rows={3}
-                maxLength={120}
-              />
-              <p className="field-hint">비워 두면 익명 작가 2명으로 바로 시작합니다.</p>
-
-              <fieldset className="genre-fieldset">
-                <legend>오늘의 분위기</legend>
-                <div className="genre-grid">
-                  {GENRES.map((item) => (
-                    <button
-                      key={item.id}
-                      type="button"
-                      className={`genre-button ${genre === item.id ? "is-selected" : ""}`}
-                      aria-pressed={genre === item.id}
-                      onClick={() => setGenre(item.id)}
-                    >
-                      <span aria-hidden="true">{item.symbol}</span>
-                      {item.label}
-                    </button>
-                  ))}
-                </div>
-              </fieldset>
-
-              <div className="rule-grid">
-                <label>
-                  <span>총 차례</span>
-                  <select value={turnLimit} onChange={(event) => setTurnLimit(Number(event.target.value))}>
-                    <option value={6} disabled={setupPlayers.length > 6}>6차례 · 짧게</option>
-                    <option value={8}>8차례 · 알맞게</option>
-                    <option value={10}>10차례 · 길게</option>
-                  </select>
+                <label className="field-label" htmlFor="participants">
+                  <span>작가 이름</span>
+                  <small>줄바꿈 또는 쉼표로 구분 · 최대 8명</small>
                 </label>
-                <label>
-                  <span>한 차례 시간</span>
-                  <select value={turnSeconds} onChange={(event) => setTurnSeconds(Number(event.target.value))}>
-                    <option value={45}>45초 · 빠르게</option>
-                    <option value={60}>60초 · 알맞게</option>
-                    <option value={90}>90초 · 여유롭게</option>
-                  </select>
-                </label>
-              </div>
-              <p className="field-hint" role="status">
-                {setupPlayers.length}명의 작가가 모두 한 번 이상 쓸 수 있도록 최소 {minimumTurnLimit}차례가 필요해요.
-              </p>
+                <textarea
+                  id="participants"
+                  className="name-input"
+                  value={participantsInput}
+                  onChange={(event) => updateParticipants(event.target.value)}
+                  placeholder={"민지\n서준\n지우"}
+                  rows={3}
+                  maxLength={120}
+                />
+                <p className="field-hint">비워 두면 익명 작가 2명으로 바로 시작합니다.</p>
 
-              <button className="primary-button start-button" type="submit">
-                <span>첫 문장 뽑기</span>
-                <span aria-hidden="true">→</span>
-              </button>
-              <p className="privacy-copy">이름과 원고는 서버로 전송하지 않습니다.</p>
-            </form>
+                <fieldset className="genre-fieldset">
+                  <legend>오늘의 분위기</legend>
+                  <div className="genre-grid">
+                    {GENRES.map((item) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        className={`genre-button ${genre === item.id ? "is-selected" : ""}`}
+                        aria-pressed={genre === item.id}
+                        onClick={() => setGenre(item.id)}
+                      >
+                        <span aria-hidden="true">{item.symbol}</span>
+                        {item.label}
+                      </button>
+                    ))}
+                  </div>
+                </fieldset>
+                <details className="setup-detail" aria-label="고급 게임 규칙">
+                  <summary>게임 규칙 설정</summary>
+                  <div className="rule-grid">
+                    <label>
+                      <span>총 차례</span>
+                      <select value={turnLimit} onChange={(event) => setTurnLimit(Number(event.target.value))}>
+                        <option value={6} disabled={setupPlayers.length > 6}>6차례 · 짧게</option>
+                        <option value={8}>8차례 · 알맞게</option>
+                        <option value={10}>10차례 · 길게</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>한 차례 시간</span>
+                      <select value={turnSeconds} onChange={(event) => setTurnSeconds(Number(event.target.value))}>
+                        <option value={45}>45초 · 빠르게</option>
+                        <option value={60}>60초 · 알맞게</option>
+                        <option value={90}>90초 · 여유롭게</option>
+                      </select>
+                    </label>
+                  </div>
+                  <p className="field-hint" role="status">
+                    {setupPlayers.length}명의 작가가 모두 한 번 이상 쓸 수 있도록 최소 {minimumTurnLimit}차례가 필요해요.
+                  </p>
+                </details>
+
+                <button className="primary-button start-button" type="submit">
+                  <span>첫 문장 뽑기</span>
+                  <span aria-hidden="true">→</span>
+                </button>
+                <p className="privacy-copy">이름과 원고는 서버로 전송하지 않습니다.</p>
+              </form>
+            )}
           </section>
         )}
 

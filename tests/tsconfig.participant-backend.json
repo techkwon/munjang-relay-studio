@@ -1,0 +1,9 @@
+{
+  "extends": "../tsconfig.json",
+  "include": [
+    "../types/cloudflare.d.ts",
+    "../lib/live-story.ts",
+    "../app/api/teacher/rooms/route.ts",
+    "../app/api/rooms/route.ts"
+  ]
+}

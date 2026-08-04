@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { ThemeToggle } from "@/app/components/ThemeToggle";
 
 type RoomStatus = "lobby" | "active" | "complete" | "closed";
 
@@ -409,6 +410,16 @@ export function StudentJoin() {
 
   const roomDone = room?.status === "complete" || room?.status === "closed";
   const progress = room ? (roomDone ? 100 : Math.min(100, (room.currentTurn / room.turnLimit) * 100)) : 0;
+  const currentWriterLabel = currentWriter?.name ?? currentWriter?.displayName ?? "다음 작가";
+  const activeStageLabel = roomDone
+    ? "작품 완성"
+    : room?.status === "active"
+      ? isMyTurn
+        ? "내 차례"
+        : currentWriter?.kind === "ai"
+          ? "AI 작성 중"
+          : "기다리는 중"
+      : "입장 대기";
 
   return (
     <main className="retro-shell student-shell">
@@ -417,11 +428,14 @@ export function StudentJoin() {
         <Link className="retro-brand" href="/">
           <span aria-hidden="true">잇</span><strong>문장잇기</strong><small>학생용</small>
         </Link>
-        <nav className="mode-switcher" aria-label="문장잇기 모드">
-          <Link href="/">한 화면</Link>
-          <Link href="/teacher">교사용</Link>
-          <Link href="/join" aria-current="page">학생용</Link>
-        </nav>
+        <div className="student-top-actions">
+          <nav className="mode-switcher" aria-label="문장잇기 모드">
+            <Link href="/">한 화면</Link>
+            <Link href="/teacher">교사용</Link>
+            <Link href="/join" aria-current="page">학생용</Link>
+          </nav>
+          <ThemeToggle />
+        </div>
       </header>
 
       <div id="student-main" className="student-stage">
@@ -466,10 +480,9 @@ export function StudentJoin() {
                     <span>나의 작가명</span>
                     <input value={name} onChange={(event) => setName(event.target.value)} placeholder="예: 반짝연필" maxLength={20} autoFocus disabled={!canJoinRoom} />
                   </label>
-                  <div className="join-room-summary">
-                    <span>사람 자리 {room.humanWriterCount}명</span>
-                    <span>현재 접속 {room.participantCount ?? 0}명</span>
-                    <span>남은 자리 {room.availableHumanSlots ?? room.humanWriterCount}개</span>
+                  <div className="join-room-summary" aria-label="방 참여 상태">
+                    <span>남은 사람 자리 {room.availableHumanSlots ?? room.humanWriterCount}개</span>
+                    <span>AI 작가 {room.aiWriterCount}명</span>
                   </div>
                   <button className="retro-primary" type="submit" disabled={busy || !name.trim() || !canJoinRoom}>{busy ? "입장 중…" : "작가로 입장"}</button>
                   <button className="link-button" type="button" onClick={resetJoin}>다른 방 코드 입력</button>
@@ -485,7 +498,7 @@ export function StudentJoin() {
           <section className={`student-room status-${room.status}`} aria-labelledby="room-title">
             <div className="student-room-head">
               <div>
-                <span className={`status-chip status-${room.status}`}>{roomDone ? "작품 완성" : room.status === "active" ? "활동 중" : "입장 대기"}</span>
+                <span className={`status-chip status-${room.status}`}>{activeStageLabel}</span>
                 <p className="terminal-kicker">방 {room.code} · {room.orderMode === "random" ? "랜덤 순서" : "차례대로"}</p>
                 <h1 id="room-title">{room.storyTitle || room.title}</h1>
               </div>
@@ -506,20 +519,23 @@ export function StudentJoin() {
               <span style={{ width: `${progress}%` }} />
             </div>
 
-            <div className="student-writer-rail" aria-label="작가 순서">
-              {writers.map((writer) => (
-                <div key={writer.id} className={`${writer.kind} ${writer.id === currentWriter?.id && room.status === "active" ? "is-current" : ""} ${writer.id === me?.id ? "is-me" : ""}`}>
-                  <span>{writer.position + 1}</span>
-                  <strong>{writer.name ?? writer.displayName}</strong>
-                  <small>{writer.id === me?.id ? "나" : writer.kind === "ai" ? "AI" : "작가"}</small>
-                </div>
-              ))}
-            </div>
+            <details className="student-roster">
+              <summary>작가 순서 보기</summary>
+              <div className="student-writer-rail" aria-label="작가 순서">
+                {writers.map((writer) => (
+                  <div key={writer.id} className={`${writer.kind} ${writer.id === currentWriter?.id && room.status === "active" ? "is-current" : ""} ${writer.id === me?.id ? "is-me" : ""}`}>
+                    <span>{writer.position + 1}</span>
+                    <strong>{writer.name ?? writer.displayName}</strong>
+                    <small>{writer.id === me?.id ? "나" : writer.kind === "ai" ? "AI" : "작가"}</small>
+                  </div>
+                ))}
+              </div>
+            </details>
 
             {room.status === "lobby" && (
               <div className="retro-window waiting-window">
                 <div className="window-titlebar"><span>입장 대기</span><i aria-hidden="true">● ● ●</i></div>
-                <div><span className="waiting-pulse" aria-hidden="true" /><h2>교사가 활동을 시작할 때까지 기다려 주세요.</h2><p>{room.participantCount ?? writers.filter((writer) => writer.kind === "human").length}명의 사람 작가가 접속했습니다.</p></div>
+                <div><span className="waiting-pulse" aria-hidden="true" /><h2>교사가 활동을 시작하면 자동으로 넘어가요.</h2><p>이 화면을 열어 둔 채 기다려 주세요.</p></div>
               </div>
             )}
 
@@ -529,8 +545,8 @@ export function StudentJoin() {
                 <div>
                   <span className="waiting-pulse" aria-hidden="true" />
                   <p className="terminal-kicker">지금 쓰는 작가</p>
-                  <h2>{currentWriter?.name ?? currentWriter?.displayName ?? "다음 작가"}의 차례입니다.</h2>
-                  <p>{currentWriter?.kind === "ai" ? "SOLAR 작가가 앞 문단을 읽고 다음 장면을 쓰고 있어요." : "내 차례가 오면 작성 화면이 자동으로 열립니다."}</p>
+                  <h2>{currentWriterLabel}의 차례입니다.</h2>
+                  <p>{currentWriter?.kind === "ai" ? "AI 작가가 앞 문단을 읽고 다음 장면을 쓰고 있어요." : "내 차례가 오면 작성 화면이 자동으로 열립니다."}</p>
                 </div>
               </div>
             )}
@@ -567,21 +583,33 @@ export function StudentJoin() {
                   <div className="window-titlebar"><span>사람 작가 성장 리포트</span><i aria-hidden="true">● ● ●</i></div>
                   <div className="report-body">
                     <p className="terminal-kicker">AI 협업 분석</p>
-                    <h2>사람 작가 기여도·글쓰기 리포트</h2>
+                    <h2>글쓰기 성장 리포트</h2>
                     <p className="report-note">AI가 작품 속 문장을 바탕으로 찾은 성장 참고 자료입니다. 순위나 성적이 아닙니다.</p>
                     {report ? (
                       <>
                         {report.summary && <p className="report-summary">{report.summary}</p>}
-                        <div className="writer-report-grid">
-                          {(report.writers ?? []).map((writer, index) => (
-                            <article key={`${writer.name ?? writer.writerName}-${index}`}>
-                              <div><strong>{writer.name ?? writer.writerName ?? "작가"}</strong><span>{typeof writer.contributionShare === "number" ? `${Math.round(writer.contributionShare)}% 기여` : `${writer.paragraphs ?? 0}문단`}</span></div>
-                              {(writer.strengths ?? []).length > 0 && <ul>{writer.strengths?.map((strength) => <li key={strength}>{strength}</li>)}</ul>}
-                              {writer.nextStep && <p><b>다음 연습</b> {writer.nextStep}</p>}
-                            </article>
-                          ))}
-                        </div>
-                        {report.groupSuggestion && <p className="group-suggestion"><strong>다음 작품 제안</strong>{report.groupSuggestion}</p>}
+                        <details className="report-collapse">
+                          <summary>작가별 상세 보기</summary>
+                          <div className="writer-report-grid">
+                            {(report.writers ?? []).map((writer, index) => (
+                              <details key={`${writer.name ?? writer.writerName}-${index}`} className="writer-report-item">
+                                <summary>
+                                  <strong>{writer.name ?? writer.writerName ?? "작가"}</strong>
+                                  <span>{writer.paragraphs ?? 0}문단</span>
+                                </summary>
+                                <p className="writer-metric">{writer.paragraphs ?? 0}문단을 이어 썼어요.</p>
+                                {(writer.strengths ?? []).length > 0 && <ul>{writer.strengths?.map((strength) => <li key={strength}>{strength}</li>)}</ul>}
+                                {writer.nextStep && <p><b>다음 연습</b> {writer.nextStep}</p>}
+                              </details>
+                            ))}
+                          </div>
+                        </details>
+                        {report.groupSuggestion && (
+                          <details className="report-collapse">
+                            <summary>다음 작품 제안</summary>
+                            <p className="group-suggestion">{report.groupSuggestion}</p>
+                          </details>
+                        )}
                       </>
                     ) : (
                       <div className="report-loading"><span aria-hidden="true">AI</span><p>{room.analysisStatus === "failed" ? "분석 보고서를 만들지 못했습니다. 교사 화면에서 다시 요청할 수 있어요." : "완성 작품을 읽고 협업 리포트를 작성하고 있습니다."}</p></div>

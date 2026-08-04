@@ -87,7 +87,7 @@ async function join(body: Record<string, unknown>) {
   if (room.status !== "lobby") throw new ApiError("대기 중인 방에만 입장할 수 있어요.", 409);
 
   const participants = await getParticipants(db, roomCode);
-  const slotIndex = nextHumanSlot(participants, room.human_limit);
+  const slotIndex = nextHumanSlot(participants, room.human_limit, room.writer_limit);
   if (slotIndex === null) throw new ApiError("이 방의 사람 작가 자리가 모두 찼어요.", 409);
   if (participants.some((participant) => participant.writer_name === writerName)) {
     throw new ApiError("이미 사용 중인 작가명이에요. 다른 이름을 입력해 주세요.", 409);

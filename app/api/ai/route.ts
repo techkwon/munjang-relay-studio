@@ -105,15 +105,16 @@ async function seedRoom(db: D1Database, room: RoomRow) {
         schemaName: "story_seed",
         schema: seedSchema,
         maxTokens: 500,
+        temperature: 0.72,
         messages: [
           {
             role: "system",
             content:
-              "너는 초등학생 교실용 릴레이 글쓰기 활동을 돕는 한국어 작가다. 내용은 안전하고 따뜻해야 하며 폭력, 혐오, 선정성, 개인정보를 피한다. 반드시 JSON 스키마에 맞춘다.",
+              "너는 초등 3-6학년 교실용 릴레이 글쓰기 활동을 여는 한국어 작가다. 안전하고 따뜻한 모험감을 주되 폭력, 혐오, 선정성, 개인정보, 공포 과잉은 피한다. 흔한 클리셰, 메타 설명, 지시문 없이 반드시 JSON 스키마만 쓴다.",
           },
           {
             role: "user",
-            content: `장르: ${room.genre}\n총 차례: ${room.turn_limit}\n작가 수: ${room.writer_limit}\n짧은 제목, 상황 설명, 이어 쓰기 좋은 첫 문장을 한국어로 만들어 줘.`,
+            content: `장르: ${room.genre}\n총 차례: ${room.turn_limit}\n작가 수: ${room.writer_limit}\n요청: 짧은 제목, 1-2문장 상황 설명, 30-100자 첫 문장을 한국어로 만들어 줘.\n첫 문장 조건: 구체적인 감각 단서 1개와 궁금증 1개가 있어야 한다. "빛났다", "갑자기", "모두가 기다렸다" 같은 흔한 시작을 피하고, 다음 작가가 이어 쓸 여백을 남긴다.`,
           },
         ],
       }),
@@ -182,11 +183,12 @@ async function continueAiTurn(db: D1Database, initialRoom: RoomRow) {
           schemaName: "story_continuation",
           schema: continuationSchema,
           maxTokens: 650,
+          temperature: 0.64,
           messages: [
             {
               role: "system",
               content:
-                "너는 초등학생 교실용 릴레이 이야기에 참여하는 AI 작가다. 앞 문단을 존중하고, 아이들에게 안전한 내용으로 500자 이하 한국어 한 문단만 쓴다. 비난, 순위, 개인정보, 과격한 폭력은 피한다.",
+                "너는 초등 3-6학년 교실용 릴레이 이야기에 함께 참여하는 AI 작가다. 앞 사람이 남긴 단서와 말투를 존중한다. 쉬운 한국어 한 문단만 쓰고, 개인정보, 과격한 폭력, 비난, 순위 표현을 피한다. 이야기를 처음부터 다시 시작하거나 성급히 끝내지 않는다.",
             },
             {
               role: "user",
@@ -240,11 +242,12 @@ async function reportRoom(db: D1Database, initialRoom: RoomRow) {
       schemaName: "writing_report",
       schema: reportSchema,
       maxTokens: 1200,
+      temperature: 0.22,
       messages: [
         {
           role: "system",
           content:
-            "너는 초등학생 글쓰기 활동을 돕는 교사 보조자다. 사람 작가만 평가하고, 순위나 비난 없이 구체적 장점과 다음 연습을 제안한다. 반드시 JSON 스키마를 지킨다.",
+            "너는 초등학생 글쓰기 활동을 돕는 교사 보조자다. 사람 작가만 대상으로 관찰 가능한 문장 근거에 기반해 말한다. 분량, 비율, 순서를 실력으로 해석하지 말고, 순위·점수·비난 없이 구체적 장점과 다음 연습을 제안한다. 근거가 부족하면 제한적으로 말한다. 반드시 JSON 스키마를 지킨다.",
         },
         {
           role: "user",
@@ -365,15 +368,20 @@ async function markAiFailure(db: D1Database, roomCode: string, claim: string, ac
 }
 
 function sanitizeSeed(seed: SeedResult): SeedResult {
+  const fallbackOpener = "책상 밑 종이봉투에서 바닷물 냄새가 나자, 우리는 누가 보낸 것인지 서로를 바라봤습니다.";
+  const opener = limitText(seed.opener, 100, fallbackOpener);
+  const firstSentenceMatch = opener.match(/[.!?](?:[”’\"])?(?=\s|$)/);
+  const firstSentenceEnd = firstSentenceMatch?.index === undefined ? -1 : firstSentenceMatch.index + firstSentenceMatch[0].length;
+  const singleSentence = firstSentenceEnd >= 0 ? opener.slice(0, firstSentenceEnd) : opener;
   return {
     title: limitText(seed.title, 40, "AI 이야기"),
     setup: limitText(seed.setup, 220, "함께 이어 쓰기 좋은 이야기를 시작합니다."),
-    opener: limitText(seed.opener, 180, "첫 문장이 조용히 빛나기 시작했습니다."),
+    opener: singleSentence.length < 30 ? fallbackOpener : singleSentence,
   };
 }
 
 function sanitizeParagraph(value: string) {
-  return limitText(value, 500, "AI 작가가 다음 장면을 조심스럽게 이어 썼습니다.");
+  return limitTextAtBoundary(value, 300, "AI 작가가 앞 장면의 단서를 살려 다음 행동을 한 가지 더 이어 썼습니다.");
 }
 
 function limitText(value: unknown, max: number, fallback: string) {
@@ -381,6 +389,18 @@ function limitText(value: unknown, max: number, fallback: string) {
   const text = value.trim().replace(/\s+/g, " ");
   if (!text) return fallback;
   return text.length > max ? text.slice(0, max) : text;
+}
+
+function limitTextAtBoundary(value: unknown, max: number, fallback: string) {
+  if (typeof value !== "string") return fallback;
+  const text = value.trim().replace(/\s+/g, " ");
+  if (!text) return fallback;
+  if (text.length <= max) return text;
+  const clipped = text.slice(0, max);
+  const lastSentence = Math.max(clipped.lastIndexOf("."), clipped.lastIndexOf("!"), clipped.lastIndexOf("?"));
+  if (lastSentence >= Math.floor(max * 0.6)) return clipped.slice(0, lastSentence + 1);
+  const lastSpace = clipped.lastIndexOf(" ");
+  return `${clipped.slice(0, lastSpace >= Math.floor(max * 0.75) ? lastSpace : max).trim()}…`;
 }
 
 function buildContinuePrompt(room: RoomRow, turn: StoryTurnRow, participants: ParticipantRow[], turns: StoryTurnRow[]) {
@@ -409,7 +429,7 @@ function buildContinuePrompt(room: RoomRow, turn: StoryTurnRow, participants: Pa
     `AI 작가 역할: ${ai?.ai_role ?? "이야기 조력자"}`,
     "이미 제출된 문단:",
     submitted || "(아직 제출된 문단 없음)",
-    "조건: 이전 문단과 자연스럽게 이어지는 한국어 한 문단. 500자 이하. 결말을 너무 빨리 끝내지 말 것.",
+    "조건: 이전 문단의 구체적 단서나 표현 하나를 반드시 다시 사용한다. 새로운 사건/사물은 한 가지만 추가한다. 120-300자 한국어 한 문단으로 쓴다. 첫 문장을 반복하지 말고, 이야기를 다시 시작하지 말고, 마지막 차례가 아니면 결말을 확정하지 않는다. 다음 작가가 이어 쓸 행동이나 질문을 남긴다.",
   ].join("\n");
 }
 
@@ -458,7 +478,7 @@ function buildReportPrompt(room: RoomRow, metrics: HumanMetric[], turns: StoryTu
     ),
     "완성 이야기:",
     story,
-    "요청: 사람 작가만 대상으로 장점 1~3개와 다음 연습 1개를 제안해 줘. AI 작가는 평가하지 마. 순위, 비교 비난, 점수화는 하지 마.",
+    "요청: 사람 작가만 대상으로 장점 1~3개와 다음 연습 1개를 제안해 줘. 각 장점은 실제 문장 근거에 연결하되 긴 직접 인용은 피한다. AI 작가는 평가하지 마. 기여 비율과 글자 수는 참여량 참고일 뿐 실력으로 해석하지 마. 순위, 비교 비난, 점수화는 하지 마. 글이 적으면 근거가 적다고 부드럽게 말해.",
   ].join("\n");
 }
 
@@ -467,8 +487,8 @@ function normalizeReport(report: WritingReport, metrics: HumanMetric[]): Writing
   return {
     summary: limitText(report.summary, 300, "함께 이야기를 완성하며 장면과 문장을 이어 가는 연습을 했습니다."),
     collaborationHighlights: normalizeStringArray(report.collaborationHighlights, 3, "서로의 문장을 이어 받아 이야기를 완성했습니다."),
-    writers: metrics.map((metric) => {
-      const writer = report.writers.find((item) => item.name === metric.promptName);
+    writers: metrics.map((metric, index) => {
+      const writer = report.writers.find((item) => [metric.promptName, metric.participant.writer_name].includes(item.name)) ?? report.writers[index];
       const sourceMetric = metricByName.get(metric.participant.writer_name) ?? metric;
       return {
         name: metric.participant.writer_name,
@@ -522,9 +542,9 @@ const seedSchema = {
   type: "object",
   additionalProperties: false,
   properties: {
-    title: { type: "string" },
-    setup: { type: "string" },
-    opener: { type: "string" },
+    title: { type: "string", minLength: 2, maxLength: 40, description: "짧고 구체적인 한국어 이야기 제목" },
+    setup: { type: "string", minLength: 20, maxLength: 220, description: "이어 쓰기 방향만 제시하는 1-2문장 상황" },
+    opener: { type: "string", minLength: 30, maxLength: 100, description: "감각 단서와 궁금증이 있는 한국어 첫 문장 하나" },
   },
   required: ["title", "setup", "opener"],
 };
@@ -533,7 +553,7 @@ const continuationSchema = {
   type: "object",
   additionalProperties: false,
   properties: {
-    paragraph: { type: "string" },
+    paragraph: { type: "string", minLength: 120, maxLength: 300, description: "앞 단서를 이어 받아 다음 작가에게 여백을 남기는 한국어 한 문단" },
   },
   required: ["paragraph"],
 };

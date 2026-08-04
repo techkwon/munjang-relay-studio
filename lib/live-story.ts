@@ -93,6 +93,7 @@ export type NewRoomSettings = {
   writerLimit: number;
   humanLimit: number;
   aiLimit: number;
+  writerTypes: WriterType[];
   genre: Genre;
   turnLimit: number;
   turnSeconds: number;
@@ -101,9 +102,20 @@ export type NewRoomSettings = {
 
 const ROOM_CODE_CHARACTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const GENRES: Genre[] = ["all", "adventure", "fantasy", "mystery", "daily", "space"];
-const TURN_LIMITS = [6, 8, 10];
+const TURN_LIMITS = [6, 8, 10, 12];
 const TURN_SECONDS = [45, 60, 90];
-const AI_ROLES = ["구조 설계자", "묘사 확장자", "반전 제안자", "감정 조율자", "결말 정리자", "세계관 기록자"];
+const AI_ROLES = [
+  "구조 설계자",
+  "묘사 확장자",
+  "반전 제안자",
+  "감정 조율자",
+  "대화 전문가",
+  "단서 수집가",
+  "유머 조율자",
+  "세계관 기록자",
+  "긴장감 설계자",
+  "결말 정리자",
+];
 
 const FALLBACK_SEEDS: Record<Genre, Array<{ title: string; setup: string; opener: string }>> = {
   all: [
@@ -191,19 +203,10 @@ export async function readJsonObject(request: Request): Promise<Record<string, u
 
 export function parseRoomSettings(body: Record<string, unknown>): NewRoomSettings {
   const genre = parseGenre(body.genre);
-  const writerLimit = parseAllowedNumber(body.writerLimit ?? body.writerCount, [2, 3, 4, 5, 6, 7, 8], 4);
-  const aiLimit = parseAllowedNumber(body.aiLimit ?? body.aiCount, [0, 1, 2, 3, 4, 5, 6], 0);
-  const humanLimit = parseAllowedNumber(body.humanLimit ?? body.humanCount, [1, 2, 3, 4, 5, 6, 7, 8], writerLimit - aiLimit);
-  const total = humanLimit + aiLimit;
-  if (total < 2 || total > 8) {
-    throw new ApiError("작가 수는 사람과 AI를 합쳐 2명에서 8명까지 가능해요.", 400);
-  }
-  if (total !== writerLimit) {
-    throw new ApiError("전체 작가 수는 사람 작가 수와 AI 작가 수의 합과 같아야 해요.", 400);
-  }
-  if (humanLimit < 1) {
-    throw new ApiError("학생이 참여하려면 사람 작가가 최소 1명 필요해요.", 400);
-  }
+  const writerTypes = parseWriterTypes(body);
+  const writerLimit = writerTypes.length;
+  const humanLimit = writerTypes.filter((type) => type === "human").length;
+  const aiLimit = writerTypes.length - humanLimit;
 
   const turnLimit = parseAllowedNumber(body.turnLimit, TURN_LIMITS, 8);
   if (turnLimit < writerLimit) {
@@ -214,6 +217,7 @@ export function parseRoomSettings(body: Record<string, unknown>): NewRoomSetting
     writerLimit,
     humanLimit,
     aiLimit,
+    writerTypes,
     genre,
     turnLimit,
     turnSeconds: parseAllowedNumber(body.turnSeconds, TURN_SECONDS, 60),
@@ -295,7 +299,9 @@ export function safeRoomPreview(room: RoomRow, participants: ParticipantRow[] = 
   return {
     roomCode: room.room_code,
     status: room.status,
+    writerLimit: room.writer_limit,
     humanLimit: room.human_limit,
+    aiLimit: room.ai_limit,
     participantCount,
     availableHumanSlots: Math.max(0, room.human_limit - participantCount),
   };
@@ -453,25 +459,35 @@ export async function advanceExpiredTurns(db: D1Database, initialRoom: RoomRow, 
   return room;
 }
 
-export function nextHumanSlot(participants: ParticipantRow[], humanLimit: number) {
-  const used = new Set(participants.filter((participant) => participant.writer_type === "human").map((participant) => participant.slot_index));
-  for (let slot = 0; slot < humanLimit; slot += 1) {
+export function nextHumanSlot(participants: ParticipantRow[], humanLimit: number, writerLimit = humanLimit) {
+  const humanCount = participants.filter((participant) => participant.writer_type === "human").length;
+  if (humanCount >= humanLimit) return null;
+
+  const used = new Set(participants.map((participant) => participant.slot_index));
+  for (let slot = 0; slot < writerLimit; slot += 1) {
     if (!used.has(slot)) return slot;
   }
   return null;
 }
 
-export function makeAiParticipants(roomCode: string, humanLimit: number, aiLimit: number, now: number) {
-  return Array.from({ length: aiLimit }, (_, index) => ({
-    id: makeId("ai"),
-    roomCode,
-    writerName: `AI 작가 ${index + 1}`,
-    writerType: "ai" as const,
-    aiRole: AI_ROLES[index % AI_ROLES.length],
-    tokenHash: null,
-    slotIndex: humanLimit + index,
-    joinedAt: now,
-  }));
+export function makeAiParticipants(roomCode: string, writerTypes: WriterType[], now: number) {
+  let aiIndex = 0;
+  return writerTypes.flatMap((writerType, slotIndex) => {
+    if (writerType !== "ai") return [];
+    aiIndex += 1;
+    return [
+      {
+        id: makeId("ai"),
+        roomCode,
+        writerName: `AI 작가 ${aiIndex}`,
+        writerType: "ai" as const,
+        aiRole: AI_ROLES[(aiIndex - 1) % AI_ROLES.length],
+        tokenHash: null,
+        slotIndex,
+        joinedAt: now,
+      },
+    ];
+  });
 }
 
 function parseGenre(value: unknown): Genre {
@@ -485,6 +501,54 @@ function parseAllowedNumber(value: unknown, allowed: number[], fallback: number)
     throw new ApiError("방 설정 값이 허용 범위를 벗어났어요.", 400);
   }
   return numeric;
+}
+
+function parseWriterTypes(body: Record<string, unknown>): WriterType[] {
+  if (Array.isArray(body.writerTypes)) {
+    const writerTypes = body.writerTypes.map((value) => {
+      if (value === "human" || value === "ai") return value;
+      throw new ApiError("참여자 역할은 사람 또는 AI로만 설정할 수 있어요.", 400);
+    });
+    const requestedLimit = body.writerLimit ?? body.writerCount;
+    if (requestedLimit !== undefined && Number(requestedLimit) !== writerTypes.length) {
+      throw new ApiError("전체 작가 수는 참여자 역할 설정과 같아야 해요.", 400);
+    }
+    validateWriterComposition(writerTypes);
+    return writerTypes;
+  }
+
+  const requestedWriterLimit = body.writerLimit ?? body.writerCount;
+  const requestedAiLimit = body.aiLimit ?? body.aiCount;
+  const requestedHumanLimit = body.humanLimit ?? body.humanCount;
+  const aiLimit = parseAllowedNumber(requestedAiLimit, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], 0);
+  let writerLimitFallback = 4;
+  if (requestedWriterLimit === undefined && requestedHumanLimit !== undefined) {
+    writerLimitFallback = parseAllowedNumber(requestedHumanLimit, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 4) + aiLimit;
+  } else if (requestedWriterLimit === undefined && requestedAiLimit !== undefined) {
+    writerLimitFallback = Math.max(4, aiLimit + 1);
+  }
+  const writerLimit = parseAllowedNumber(requestedWriterLimit, [2, 3, 4, 5, 6, 7, 8, 9, 10], writerLimitFallback);
+  const humanLimit = parseAllowedNumber(requestedHumanLimit, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], writerLimit - aiLimit);
+  const writerTypes = [...Array<WriterType>(humanLimit).fill("human"), ...Array<WriterType>(aiLimit).fill("ai")];
+  if (writerTypes.length !== writerLimit) {
+    throw new ApiError("전체 작가 수는 사람 작가 수와 AI 작가 수의 합과 같아야 해요.", 400);
+  }
+  validateWriterComposition(writerTypes);
+  return writerTypes;
+}
+
+function validateWriterComposition(writerTypes: WriterType[]) {
+  const humanLimit = writerTypes.filter((type) => type === "human").length;
+  const aiLimit = writerTypes.length - humanLimit;
+  if (writerTypes.length < 2 || writerTypes.length > 10) {
+    throw new ApiError("작가 수는 사람과 AI를 합쳐 2명에서 10명까지 가능해요.", 400);
+  }
+  if (humanLimit < 1) {
+    throw new ApiError("학생이 참여하려면 사람 작가가 최소 1명 필요해요.", 400);
+  }
+  if (aiLimit > 9) {
+    throw new ApiError("AI 작가는 한 방에 최대 9명까지 설정할 수 있어요.", 400);
+  }
 }
 
 function deterministicNumber(value: string, modulo: number) {

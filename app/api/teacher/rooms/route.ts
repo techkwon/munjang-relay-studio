@@ -89,7 +89,7 @@ export async function POST(request: Request) {
     const seedIndex = makeSeedIndex(roomCode, settings.genre);
     const eventIndex = makeEventIndex(roomCode, settings.genre);
     const seed = createFallbackSeed(settings.genre, seedIndex);
-    const aiParticipants = makeAiParticipants(roomCode, settings.humanLimit, settings.aiLimit, now);
+    const aiParticipants = makeAiParticipants(roomCode, settings.writerTypes, now);
 
     await db.batch([
       db

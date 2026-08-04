@@ -43,10 +43,11 @@ test("server-renders the Korean story relay setup", async () => {
   const html = await response.text();
   assert.match(html, /<html[^>]*lang="ko"/i);
   assert.match(html, /<title>문장잇기 — AI와 함께 만드는 릴레이 이야기<\/title>/i);
-  assert.match(html, /한 사람이 쓰고/);
-  assert.match(html, /다음 사람이 상상해요/);
-  assert.match(html, /오늘의 작가들을 모아 볼까요/);
-  assert.match(html, /첫 문장 뽑기/);
+  assert.match(html, /교실에서 바로 여는/);
+  assert.match(html, /릴레이 소설방/);
+  assert.match(html, /교사용 방 만들기/);
+  assert.match(html, /학생용 참여하기/);
+  assert.match(html, /PC 1대로 시작/);
   assert.match(html, /로그인 없이/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|Building your site/i);
 });
@@ -416,12 +417,96 @@ test("applies Retro Digital Y2K styling across local teacher and student routes"
     readProjectFile("app/globals.css"),
   ]);
 
-  assert.match(page, /<Link href="\/teacher">교사용<\/Link>/);
-  assert.match(page, /<Link href="\/join">학생용<\/Link>/);
+  assert.match(page, /<Link href="\/teacher">교사용 방 만들기/);
+  assert.match(page, /<Link href="\/join">학생용 참여하기/);
   assert.match(teacher, /className="retro-shell teacher-shell"/);
   assert.match(student, /className="retro-shell student-shell"/);
   assert.match(css, /--y2k-cyan/);
   assert.match(css, /\.retro-window/);
   assert.match(css, /\.window-titlebar/);
   assert.match(css, /repeating-linear-gradient/);
+});
+
+test("keeps the landing decision focused and reveals standalone setup intentionally", async () => {
+  const page = await readProjectFile("app/page.tsx");
+
+  assert.match(page, /const \[showLocalSetup, setShowLocalSetup\] = useState\(false\)/);
+  assert.match(page, /function revealLocalSetup\(\)/);
+  assert.match(page, /교사용 방 만들기/);
+  assert.match(page, /학생용 참여하기/);
+  assert.match(page, /PC 1대로 시작/);
+  assert.match(page, /\{showLocalSetup && \(/);
+  assert.doesNotMatch(page, /className="hero-proof"/);
+  assert.doesNotMatch(page, /className="paper-stack"/);
+});
+
+test("provides persistent readable light and dark modes across all routes", async () => {
+  const [layout, toggle, page, teacher, student, css] = await Promise.all([
+    readProjectFile("app/layout.tsx"),
+    readProjectFile("app/components/ThemeToggle.tsx"),
+    readProjectFile("app/page.tsx"),
+    readProjectFile("app/teacher/TeacherDashboard.tsx"),
+    readProjectFile("app/join/StudentJoin.tsx"),
+    readProjectFile("app/globals.css"),
+  ]);
+
+  assert.match(layout, /data-theme="dark"/);
+  assert.match(layout, /munjang-itgi:theme/);
+  assert.match(toggle, /type Theme = "dark" \| "light"/);
+  assert.match(toggle, /document\.documentElement\.dataset\.theme = theme/);
+  assert.match(toggle, /window\.localStorage\.setItem\("munjang-itgi:theme", nextTheme\)/);
+  assert.match(`${page}\n${teacher}\n${student}`, /<ThemeToggle \/>/);
+  assert.match(css, /html\[data-theme="light"\]/);
+  assert.match(css, /--shell-text: #101426/);
+  assert.match(css, /\.theme-toggle \{[\s\S]*min-height: 44px;/);
+});
+
+test("keeps student feedback growth-focused without a visible contribution ranking", async () => {
+  const student = await readProjectFile("app/join/StudentJoin.tsx");
+
+  assert.match(student, /글쓰기 성장 리포트/);
+  assert.match(student, /작가 순서 보기/);
+  assert.match(student, /\{writer\.paragraphs \?\? 0\}문단/);
+  assert.doesNotMatch(student, /% 기여|기여도·글쓰기/);
+});
+
+test("supports ten ordered human or AI seats with a focused teacher workflow", async () => {
+  const [teacher, liveStory, teacherRoute, studentRoute] = await Promise.all([
+    readProjectFile("app/teacher/TeacherDashboard.tsx"),
+    readProjectFile("lib/live-story.ts"),
+    readProjectFile("app/api/teacher/rooms/route.ts"),
+    readProjectFile("app/api/rooms/route.ts"),
+  ]);
+
+  assert.match(teacher, /const PARTICIPANT_COUNTS = \[2, 3, 4, 5, 6, 7, 8, 9, 10\]/);
+  assert.match(teacher, /useState<WriterKind\[]>\(\["human", "human", "human", "ai"\]\)/);
+  assert.match(teacher, /writerTypes: activeWriterTypes/);
+  assert.match(teacher, /참여자별 작가 유형/);
+  assert.match(teacher, />\s*인간\s*<\/button>/);
+  assert.match(teacher, />\s*AI\s*<\/button>/);
+  assert.match(teacher, /\["share", "공유"\][\s\S]*\["run", "진행"\][\s\S]*\["story", "원고"\][\s\S]*\["analysis", "분석"\]/);
+  assert.match(teacher, /const nextAiRoom = rooms\.find/);
+  assert.match(teacher, /\[aiBusyAction, aiFailure\?\.roomId, busy, rooms\]/);
+  assert.match(liveStory, /writerTypes: WriterType\[]/);
+  assert.match(liveStory, /writerTypes\.length < 2 \|\| writerTypes\.length > 10/);
+  assert.match(liveStory, /AI 작가는 한 방에 최대 9명/);
+  assert.match(teacherRoute, /makeAiParticipants\(roomCode, settings\.writerTypes, now\)/);
+  assert.match(studentRoute, /nextHumanSlot\(participants, room\.human_limit, room\.writer_limit\)/);
+});
+
+test("constrains Solar output to preserve student voice and evidence-based feedback", async () => {
+  const aiRoute = await readProjectFile("app/api/ai/route.ts");
+
+  assert.match(aiRoute, /temperature: 0\.72/);
+  assert.match(aiRoute, /temperature: 0\.64/);
+  assert.match(aiRoute, /temperature: 0\.22/);
+  assert.match(aiRoute, /구체적인 감각 단서 1개와 궁금증 1개/);
+  assert.match(aiRoute, /이전 문단의 구체적 단서나 표현 하나를 반드시 다시 사용한다/);
+  assert.match(aiRoute, /새로운 사건\/사물은 한 가지만 추가한다/);
+  assert.match(aiRoute, /다음 작가가 이어 쓸 행동이나 질문을 남긴다/);
+  assert.match(aiRoute, /분량, 비율, 순서를 실력으로 해석하지 말고/);
+  assert.match(aiRoute, /minLength: 30, maxLength: 100/);
+  assert.match(aiRoute, /minLength: 120, maxLength: 300/);
+  assert.match(aiRoute, /function limitTextAtBoundary/);
+  assert.match(aiRoute, /report\.writers\[index\]/);
 });

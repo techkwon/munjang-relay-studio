@@ -4,9 +4,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import QRCode from "qrcode";
+import { ThemeToggle } from "@/app/components/ThemeToggle";
 
 type RoomStatus = "lobby" | "active" | "complete" | "closed";
 type WriterKind = "human" | "ai";
+type TeacherView = "rooms" | "create";
+type RoomTab = "share" | "run" | "story" | "analysis";
 
 type RoomWriter = {
   id: string;
@@ -61,6 +64,10 @@ const GENRES = [
   ["daily", "일상"],
   ["space", "우주"],
 ] as const;
+
+const PARTICIPANT_COUNTS = [2, 3, 4, 5, 6, 7, 8, 9, 10] as const;
+const TURN_LIMITS = [6, 8, 10, 12] as const;
+const TURN_SECONDS = [45, 60, 90] as const;
 
 const STATUS_LABEL: Record<RoomStatus, string> = {
   lobby: "입장 대기",
@@ -145,6 +152,12 @@ function getActionLabel(action: "seed" | "continue" | "report") {
   return "AI 분석 보고서";
 }
 
+function getDefaultRoomTab(room: Room): RoomTab {
+  if (room.status === "lobby") return "share";
+  if (room.status === "active") return "run";
+  return "analysis";
+}
+
 function getFinalStoryText(room: Room) {
   const lines = [
     room.storyTitle ?? room.title,
@@ -220,12 +233,13 @@ export function TeacherDashboard({
   const [rooms, setRooms] = useState<Room[]>([]);
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [selectedRoom, setSelectedRoom] = useState<Room | null>(null);
-  const [humanWriterCount, setHumanWriterCount] = useState(3);
-  const [aiWriterCount, setAiWriterCount] = useState(1);
+  const [writerTypes, setWriterTypes] = useState<WriterKind[]>(["human", "human", "human", "ai"]);
   const [genre, setGenre] = useState("all");
   const [turnLimit, setTurnLimit] = useState(8);
   const [turnSeconds, setTurnSeconds] = useState(60);
   const [orderMode, setOrderMode] = useState<"sequential" | "random">("sequential");
+  const [teacherView, setTeacherView] = useState<TeacherView>("rooms");
+  const [roomTab, setRoomTab] = useState<RoomTab | null>(null);
   const [status, setStatus] = useState("교실 서버에 연결하는 중입니다.");
   const [busy, setBusy] = useState(false);
   const [aiBusyAction, setAiBusyAction] = useState<"seed" | "continue" | "report" | null>(null);
@@ -241,6 +255,16 @@ export function TeacherDashboard({
     (writer) => writer.position === selectedRoom?.currentWriterPosition,
   );
   const humanJoined = writers.filter((writer) => writer.kind === "human").length;
+  const occupiedWriterPositions = new Set(writers.map((writer) => writer.position));
+  const emptyHumanPositions = selectedRoom
+    ? Array.from({ length: selectedRoom.writerLimit }, (_, position) => position)
+      .filter((position) => !occupiedWriterPositions.has(position))
+      .slice(0, Math.max(0, selectedRoom.humanWriterCount - humanJoined))
+    : [];
+  const orderedWriterSlots = [
+    ...writers.map((writer) => ({ type: "writer" as const, position: writer.position, writer })),
+    ...emptyHumanPositions.map((position) => ({ type: "empty" as const, position })),
+  ].sort((a, b) => a.position - b.position);
   const currentAiTurn = Boolean(selectedRoom?.status === "active" && currentWriter?.kind === "ai");
   const selectedAiFailure = selectedRoom && aiFailure?.roomId === selectedRoom.id ? aiFailure : null;
   const statusFailureAction =
@@ -255,6 +279,16 @@ export function TeacherDashboard({
   const canExportStory = Boolean(selectedRoom && (selectedRoom.status === "complete" || selectedRoom.status === "closed") && getFinalStoryText(selectedRoom).trim());
   const analysisText = selectedRoom ? getAnalysisReportText(selectedRoom.analysisReport) : "";
   const canExportReport = Boolean(selectedRoom?.analysisStatus === "complete" && analysisText.trim());
+  const hasStoryEntries = Boolean(selectedRoom && (selectedRoom.entries ?? []).length > 0);
+  const participantCount = writerTypes.length;
+  const activeWriterTypes = writerTypes;
+  const humanWriterCount = activeWriterTypes.filter((kind) => kind === "human").length;
+  const aiWriterCount = participantCount - humanWriterCount;
+  const totalWriters = participantCount;
+  const canCreateRoom = totalWriters >= 2 && totalWriters <= 10 && humanWriterCount >= 1 && turnLimit >= totalWriters;
+  const effectiveTeacherView = rooms.length === 0 ? "create" : teacherView;
+  const defaultRoomTab: RoomTab = selectedRoom?.status === "lobby" ? "share" : selectedRoom?.status === "active" ? "run" : "analysis";
+  const activeRoomTab = roomTab ?? defaultRoomTab;
 
   const loadRooms = useCallback(async (quiet = false) => {
     try {
@@ -266,6 +300,7 @@ export function TeacherDashboard({
         : [];
       setRooms(nextRooms);
       setSelectedRoomId((current) => current ?? nextRooms[0]?.id ?? null);
+      if (nextRooms.length === 0) setTeacherView("create");
       if (!quiet) setStatus(`${nextRooms.length}개의 방을 불러왔습니다.`);
     } catch (error) {
       if (!quiet) setStatus(error instanceof Error ? error.message : "방 목록을 불러오지 못했습니다.");
@@ -280,7 +315,9 @@ export function TeacherDashboard({
       const payload = await response.json();
       if (!response.ok) throw new Error(getErrorMessage(payload, "방 상태를 불러오지 못했습니다."));
       const room = normalizeRoom(payload);
-      if (room) setSelectedRoom(room);
+      if (room) {
+        setSelectedRoom(room);
+      }
       if (!quiet) setStatus("방 상태를 새로 확인했습니다.");
       return room;
     } catch (error) {
@@ -331,19 +368,28 @@ export function TeacherDashboard({
   }, [selectedRoom]);
 
   useEffect(() => {
-    if (!selectedRoom || busy) return;
-    if (selectedRoom.status === "active" && currentWriter?.kind === "ai") {
-      void runAi("continue", selectedRoom.id, true);
+    if (busy || aiBusyAction) return;
+
+    const nextAiRoom = rooms.find((room) => {
+      if (room.status !== "active" || room.aiGenerationStatus === "failed" || aiFailure?.roomId === room.id) return false;
+      const roomWriters = room.participants ?? room.writers ?? [];
+      return roomWriters.find((writer) => writer.position === room.currentWriterPosition)?.kind === "ai";
+    });
+    if (nextAiRoom) {
+      void runAi("continue", nextAiRoom.id, true);
+      return;
     }
-    if (
-      (selectedRoom.status === "complete" || selectedRoom.status === "closed") &&
-      (selectedRoom.entries?.length ?? 0) > 0 &&
-      (!selectedRoom.analysisStatus || selectedRoom.analysisStatus === "idle" || selectedRoom.analysisStatus === "pending")
-    ) {
-      void runAi("report", selectedRoom.id, true);
-    }
+
+    const nextReportRoom = rooms.find((room) =>
+      (room.status === "complete" || room.status === "closed") &&
+      (room.entries?.length ?? 0) > 0 &&
+      room.analysisStatus !== "complete" &&
+      room.analysisStatus !== "failed" &&
+      aiFailure?.roomId !== room.id,
+    );
+    if (nextReportRoom) void runAi("report", nextReportRoom.id, true);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentWriter?.id, selectedRoom?.analysisStatus, selectedRoom?.id, selectedRoom?.status]);
+  }, [aiBusyAction, aiFailure?.roomId, busy, rooms]);
 
   useEffect(() => {
     if (!status) return;
@@ -364,7 +410,7 @@ export function TeacherDashboard({
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(getErrorMessage(payload, "AI 요청을 처리하지 못했습니다."));
-      await loadRoom(roomId, true);
+      if (selectedRoomId === roomId) await loadRoom(roomId, true);
       await loadRooms(true);
       setAiFailure(null);
       if (!quiet) setStatus("AI 작업이 완료되었습니다.");
@@ -451,10 +497,36 @@ export function TeacherDashboard({
     }
   }
 
+  function setParticipantCount(nextCount: number) {
+    setWriterTypes((current) => {
+      const next = current.slice(0, nextCount);
+      while (next.length < nextCount) next.push(next.length === 0 ? "human" : "ai");
+      if (!next.includes("human")) next[0] = "human";
+      return next;
+    });
+    setTurnLimit((current) => Math.max(current, nextCount <= 6 ? 6 : nextCount <= 8 ? 8 : nextCount <= 10 ? 10 : 12));
+  }
+
+  function setWriterKind(index: number, kind: WriterKind) {
+    const wouldRemoveLastHuman =
+      kind === "ai" &&
+      activeWriterTypes[index] === "human" &&
+      activeWriterTypes.filter((writerKind) => writerKind === "human").length === 1;
+    if (wouldRemoveLastHuman) {
+      setStatus("학생 참여를 위해 사람 작가가 최소 1명 필요합니다.");
+      return;
+    }
+    setWriterTypes((current) => {
+      const next = [...current];
+      next[index] = kind;
+      return next;
+    });
+  }
+
   async function createRoom(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (humanWriterCount + aiWriterCount < 2 || humanWriterCount + aiWriterCount > 8) {
-      setStatus("사람과 AI 작가를 합쳐 2명에서 8명으로 설정해 주세요.");
+    if (!canCreateRoom) {
+      setStatus("작가 수는 2명에서 10명, 사람 작가는 최소 1명, 총 차례는 전체 작가 수 이상이어야 합니다.");
       return;
     }
     setBusy(true);
@@ -466,7 +538,8 @@ export function TeacherDashboard({
         body: JSON.stringify({
           humanLimit: humanWriterCount,
           aiLimit: aiWriterCount,
-          writerLimit: humanWriterCount + aiWriterCount,
+          writerLimit: totalWriters,
+          writerTypes: activeWriterTypes,
           genre,
           turnLimit,
           turnSeconds,
@@ -479,6 +552,8 @@ export function TeacherDashboard({
       if (!room) throw new Error("만든 방 정보를 확인하지 못했습니다.");
       setSelectedRoomId(room.id);
       setSelectedRoom(room);
+      setTeacherView("rooms");
+      setRoomTab("share");
       await loadRooms(true);
       setStatus(`ROOM ${room.code}를 만들었습니다. AI가 첫 문장을 준비합니다.`);
       await runAi("seed", room.id, true);
@@ -502,7 +577,10 @@ export function TeacherDashboard({
       const payload = await response.json();
       if (!response.ok) throw new Error(getErrorMessage(payload, "방 상태를 바꾸지 못했습니다."));
       const room = normalizeRoom(payload);
-      if (room) setSelectedRoom(room);
+      if (room) {
+        setSelectedRoom(room);
+        setRoomTab(getDefaultRoomTab(room));
+      }
       await loadRooms(true);
       setStatus(action === "start" ? "활동이 시작되었습니다." : "활동을 마감했습니다.");
     } catch (error) {
@@ -521,12 +599,27 @@ export function TeacherDashboard({
     }
   }
 
-  const totalWriters = humanWriterCount + aiWriterCount;
   const canStart = Boolean(
     selectedRoom &&
     selectedRoom.status === "lobby" &&
     humanJoined >= selectedRoom.humanWriterCount,
   );
+  const roomPrimaryTitle = selectedRoom?.status === "lobby"
+    ? "학생 입장을 받은 뒤 활동을 시작하세요."
+    : selectedRoom?.status === "active"
+      ? currentAiTurn
+        ? "현재 차례는 SOLAR AI입니다."
+        : `${currentWriter?.name ?? "학생 작가"} 차례입니다.`
+      : selectedRoom?.analysisStatus === "complete"
+        ? "완성 작품과 분석 보고서를 확인하세요."
+        : "AI 분석 보고서를 준비하세요.";
+  const roomPrimaryBody = selectedRoom?.status === "lobby"
+    ? `사람 작가 ${humanJoined}/${selectedRoom.humanWriterCount}명 입장`
+    : selectedRoom?.status === "active"
+      ? `${selectedRoom.currentTurn}/${selectedRoom.turnLimit}차례 · 남은 시간 ${formatCountdown(selectedRoom.turnExpiresAt, now)}`
+      : canExportReport
+        ? "학생별 작성 분량과 글쓰기 피드백을 내보낼 수 있습니다."
+        : "완성 원고가 있으면 분석 보고서를 생성할 수 있습니다.";
 
   return (
     <main className="retro-shell teacher-shell">
@@ -543,12 +636,34 @@ export function TeacherDashboard({
           <Link href="/join">학생용</Link>
         </nav>
         <div className="teacher-account">
-          <span>{user.displayName}</span>
-          <a href={signOutPath}>로그아웃</a>
+          <span className="teacher-account-name">{user.displayName}</span>
+          <span className="teacher-account-actions">
+            <ThemeToggle />
+            <a href={signOutPath}>로그아웃</a>
+          </span>
         </div>
       </header>
 
+      <section className="teacher-focus-bar" aria-label="교사용 작업 선택">
+        <button
+          type="button"
+          className={effectiveTeacherView === "rooms" ? "is-selected" : ""}
+          onClick={() => setTeacherView("rooms")}
+          disabled={rooms.length === 0}
+        >
+          운영 중인 방 <strong>{rooms.length}</strong>
+        </button>
+        <button
+          type="button"
+          className={effectiveTeacherView === "create" ? "is-selected" : ""}
+          onClick={() => setTeacherView("create")}
+        >
+          새 방 만들기
+        </button>
+      </section>
+
       <div id="teacher-main" className="teacher-console">
+        {effectiveTeacherView === "create" && (
         <section className="retro-window room-create-window" aria-labelledby="create-title">
           <div className="window-titlebar">
             <span>NEW_ROOM.EXE</span>
@@ -558,68 +673,91 @@ export function TeacherDashboard({
             <div>
               <p className="terminal-kicker">ROOM SETUP / SOLAR PRO 4</p>
               <h1 id="create-title">새 이야기 방 만들기</h1>
-              <p>사람과 AI 작가를 섞고, 각 방을 독립적으로 운영하세요.</p>
+              <p>총 참여자 수를 고른 뒤 자리마다 사람 또는 AI를 지정하세요.</p>
             </div>
-
-            <div className="compact-field-grid">
-              <label className="retro-field">
-                <span>사람 작가</span>
-                <select value={humanWriterCount} onChange={(event) => setHumanWriterCount(Number(event.target.value))}>
-                  {[1, 2, 3, 4, 5, 6, 7].map((value) => <option key={value} value={value}>{value}명</option>)}
-                </select>
-              </label>
-              <label className="retro-field">
-                <span>AI 작가</span>
-                <select value={aiWriterCount} onChange={(event) => setAiWriterCount(Number(event.target.value))}>
-                  {[0, 1, 2, 3, 4].map((value) => <option key={value} value={value}>{value}명</option>)}
-                </select>
-              </label>
-            </div>
-            <p className={`writer-total ${totalWriters < 2 || totalWriters > 8 || turnLimit < totalWriters ? "is-error" : ""}`}>
-              TOTAL WRITERS · {totalWriters} / 8
-              {turnLimit < totalWriters ? " · 총 차례를 늘려 주세요" : ""}
-            </p>
 
             <label className="retro-field">
-              <span>장르</span>
-              <select value={genre} onChange={(event) => setGenre(event.target.value)}>
-                {GENRES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+              <span>참여자 숫자</span>
+              <select value={participantCount} onChange={(event) => setParticipantCount(Number(event.target.value))}>
+                {PARTICIPANT_COUNTS.map((value) => <option key={value} value={value}>{value}명</option>)}
               </select>
             </label>
 
-            <div className="compact-field-grid">
-              <label className="retro-field">
-                <span>총 차례</span>
-                <select value={turnLimit} onChange={(event) => setTurnLimit(Number(event.target.value))}>
-                  {[6, 8, 10].map((value) => <option key={value} value={value} disabled={value < totalWriters}>{value}차례</option>)}
-                </select>
-              </label>
-              <label className="retro-field">
-                <span>차례당 시간</span>
-                <select value={turnSeconds} onChange={(event) => setTurnSeconds(Number(event.target.value))}>
-                  {[45, 60, 90].map((value) => <option key={value} value={value}>{value}초</option>)}
-                </select>
-              </label>
+            <div className="writer-seat-list" aria-label="참여자별 작가 유형">
+              {activeWriterTypes.map((kind, index) => (
+                <div className="writer-seat-row" key={`writer-seat-${index}`}>
+                  <span>#{index + 1}</span>
+                  <strong>{kind === "human" ? "학생" : "AI"}</strong>
+                  <div className="segmented-mini" role="group" aria-label={`${index + 1}번 참여자 유형`}>
+                    <button
+                      type="button"
+                      className={kind === "human" ? "is-selected" : ""}
+                      onClick={() => setWriterKind(index, "human")}
+                    >
+                      인간
+                    </button>
+                    <button
+                      type="button"
+                      className={kind === "ai" ? "is-selected" : ""}
+                      onClick={() => setWriterKind(index, "ai")}
+                    >
+                      AI
+                    </button>
+                  </div>
+                </div>
+              ))}
             </div>
 
-            <fieldset className="order-mode">
-              <legend>집필 순서</legend>
-              <label>
-                <input type="radio" name="order" checked={orderMode === "sequential"} onChange={() => setOrderMode("sequential")} />
-                <span><strong>차례대로</strong><small>등록된 순서로 반복</small></span>
-              </label>
-              <label>
-                <input type="radio" name="order" checked={orderMode === "random"} onChange={() => setOrderMode("random")} />
-                <span><strong>랜덤 셔플</strong><small>시작할 때 순서 확정</small></span>
-              </label>
-            </fieldset>
+            <p className={`writer-total ${!canCreateRoom ? "is-error" : ""}`}>
+              TOTAL · {totalWriters}명 · HUMAN {humanWriterCount} · AI {aiWriterCount}
+              {turnLimit < totalWriters ? " · 총 차례를 늘려 주세요" : ""}
+            </p>
 
-            <button className="retro-primary" type="submit" disabled={busy || totalWriters < 2 || totalWriters > 8 || turnLimit < totalWriters}>
+            <details className="setup-detail">
+              <summary>장르와 진행 규칙</summary>
+              <label className="retro-field">
+                <span>장르</span>
+                <select value={genre} onChange={(event) => setGenre(event.target.value)}>
+                  {GENRES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                </select>
+              </label>
+
+              <div className="compact-field-grid">
+                <label className="retro-field">
+                  <span>총 차례</span>
+                  <select value={turnLimit} onChange={(event) => setTurnLimit(Number(event.target.value))}>
+                    {TURN_LIMITS.map((value) => <option key={value} value={value} disabled={value < totalWriters}>{value}차례</option>)}
+                  </select>
+                </label>
+                <label className="retro-field">
+                  <span>차례당 시간</span>
+                  <select value={turnSeconds} onChange={(event) => setTurnSeconds(Number(event.target.value))}>
+                    {TURN_SECONDS.map((value) => <option key={value} value={value}>{value}초</option>)}
+                  </select>
+                </label>
+              </div>
+
+              <fieldset className="order-mode">
+                <legend>집필 순서</legend>
+                <label>
+                  <input type="radio" name="order" checked={orderMode === "sequential"} onChange={() => setOrderMode("sequential")} />
+                  <span><strong>차례대로</strong><small>등록된 순서로 반복</small></span>
+                </label>
+                <label>
+                  <input type="radio" name="order" checked={orderMode === "random"} onChange={() => setOrderMode("random")} />
+                  <span><strong>랜덤 셔플</strong><small>시작할 때 순서 확정</small></span>
+                </label>
+              </fieldset>
+            </details>
+
+            <button className="retro-primary" type="submit" disabled={busy || !canCreateRoom}>
               {busy ? "처리 중…" : "방 개설 + AI 첫 문장"}
             </button>
           </form>
         </section>
+        )}
 
+        {effectiveTeacherView === "rooms" && (
         <section className="room-board" aria-labelledby="rooms-title">
           <div className="room-board-heading">
             <div>
@@ -646,7 +784,10 @@ export function TeacherDashboard({
                     type="button"
                     key={room.id}
                     className={`room-card status-${room.status} ${room.id === selectedRoomId ? "is-selected" : ""}`}
-                    onClick={() => setSelectedRoomId(room.id)}
+                    onClick={() => {
+                      setSelectedRoomId(room.id);
+                      setRoomTab(getDefaultRoomTab(room));
+                    }}
                   >
                     <span className="room-card-bar">ROOM {room.code}</span>
                     <div className="room-card-top">
@@ -673,111 +814,157 @@ export function TeacherDashboard({
                 <span>ROOM_{selectedRoom.code}.LIVE</span>
                 <i aria-hidden="true">● ● ●</i>
               </div>
-              <div className="room-detail-grid">
-                <div className="room-share-panel">
-                  <span className={`status-chip status-${selectedRoom.status}`}>{STATUS_LABEL[selectedRoom.status]}</span>
-                  <p className="room-code-label">JOIN CODE</p>
-                  <strong className="room-code-display">{selectedRoom.code}</strong>
-                  {qrDataUrl && <Image unoptimized src={qrDataUrl} alt={`방 코드 ${selectedRoom.code} 참여 QR 코드`} width={190} height={190} />}
-                  <div className="share-actions">
-                    <button type="button" onClick={copyJoinLink}>참여 링크 복사</button>
-                    <a href={joinUrl} target="_blank" rel="noreferrer">학생 화면 열기</a>
-                  </div>
-                </div>
-
-                <div className="room-live-panel">
+              <div className="room-live-panel">
                   <div className="room-live-head">
                     <div>
                       <p className="terminal-kicker">{selectedRoom.genre.toUpperCase()} · {selectedRoom.seedSource === "ai" ? "AI SEED" : "SAFE SEED"}</p>
                       <h3>{selectedRoom.storyTitle || selectedRoom.title}</h3>
                     </div>
-                    <strong className="live-countdown">{formatCountdown(selectedRoom.turnExpiresAt, now)}</strong>
-                  </div>
-                  {selectedRoom.storyOpener ? <blockquote>“{selectedRoom.storyOpener}”</blockquote> : <p className="ai-loading-copy">AI가 첫 문장을 준비하고 있습니다…</p>}
-
-                  <div className="writer-slot-grid" aria-label="작가 순서">
-                    {writers.map((writer) => (
-                      <div
-                        key={writer.id}
-                        className={`writer-slot ${writer.kind} ${writer.position === selectedRoom.currentWriterPosition && selectedRoom.status === "active" ? "is-current" : ""}`}
-                      >
-                        <span>{writer.position + 1}</span>
-                        <strong>{writer.name ?? writer.displayName}</strong>
-                        <small>{writer.kind === "ai" ? "SOLAR AI" : "HUMAN"}</small>
-                      </div>
-                    ))}
-                    {Array.from({ length: Math.max(0, selectedRoom.humanWriterCount - humanJoined) }, (_, index) => (
-                      <div className="writer-slot empty" key={`empty-${index}`}>
-                        <span>?</span><strong>입장 대기</strong><small>HUMAN</small>
-                      </div>
-                    ))}
+                    <span className={`status-chip status-${selectedRoom.status}`}>{STATUS_LABEL[selectedRoom.status]}</span>
                   </div>
 
-                  <div className="room-control-row">
+                  <section className="teacher-next-action" aria-live="polite">
+                    <div>
+                      <p className="terminal-kicker">NEXT ACTION</p>
+                      <strong>{roomPrimaryTitle}</strong>
+                      <span>{roomPrimaryBody}</span>
+                    </div>
                     {selectedRoom.status === "lobby" && (
                       <button className="retro-primary" type="button" disabled={busy || !canStart} onClick={() => void controlRoom("start")}>
-                        {canStart ? "활동 시작" : `사람 작가 ${selectedRoom.humanWriterCount - humanJoined}명 대기`}
+                        {canStart ? "활동 시작" : `${selectedRoom.humanWriterCount - humanJoined}명 대기`}
                       </button>
                     )}
-                    {(selectedRoom.status === "active" || selectedRoom.status === "lobby") && (
-                      <button className="retro-danger" type="button" disabled={busy} onClick={() => void controlRoom("close")}>활동 마감</button>
-                    )}
-                    {!selectedRoom.storyOpener && <button type="button" onClick={() => void runAi("seed", selectedRoom.id)}>AI 첫 문장 다시 요청</button>}
-                    {currentAiTurn && (
-                      <button type="button" disabled={Boolean(aiBusyAction)} onClick={() => void runAi("continue", selectedRoom.id)}>
-                        {aiBusyAction === "continue" ? "AI 이어쓰기 중…" : "AI 차례 이어쓰기"}
+                    {selectedRoom.status === "active" && currentAiTurn && (
+                      <button className="retro-primary" type="button" disabled={Boolean(aiBusyAction)} onClick={() => void runAi("continue", selectedRoom.id)}>
+                        {aiBusyAction === "continue" ? "AI 이어쓰기 중…" : "AI 이어쓰기"}
                       </button>
                     )}
-                    {(selectedRoom.status === "complete" || selectedRoom.status === "closed") &&
-                      (selectedRoom.entries?.length ?? 0) > 0 && selectedRoom.analysisStatus !== "complete" && (
-                      <button type="button" disabled={Boolean(aiBusyAction)} onClick={() => void runAi("report", selectedRoom.id)}>
-                        {aiBusyAction === "report" ? "분석 중…" : selectedRoom.analysisStatus === "failed" ? "AI 분석 다시 만들기" : "AI 분석 보고서 만들기"}
+                    {(selectedRoom.status === "complete" || selectedRoom.status === "closed") && selectedRoom.analysisStatus !== "complete" && hasStoryEntries && (
+                      <button className="retro-primary" type="button" disabled={Boolean(aiBusyAction)} onClick={() => void runAi("report", selectedRoom.id)}>
+                        {aiBusyAction === "report" ? "분석 중…" : "AI 분석 만들기"}
                       </button>
                     )}
-                  </div>
+                  </section>
 
-                  {(selectedAiFailure || statusFailureAction) && retryAction && (
-                    <div className="retro-window teacher-alert" role="alert">
-                      <div className="window-titlebar">
-                        <span>AI_ERROR.LOG</span>
-                        <i aria-hidden="true">● ● ●</i>
-                      </div>
-                      <strong>{getActionLabel(retryAction)} 작업을 완료하지 못했습니다.</strong>
-                      <p>{selectedAiFailure?.message ?? "AI 작업이 실패 상태입니다. 다시 시도해 주세요."}</p>
-                      <button type="button" disabled={Boolean(aiBusyAction)} onClick={() => void runAi(retryAction, selectedRoom.id)}>
-                        {aiBusyAction === retryAction ? "다시 시도 중…" : `${getActionLabel(retryAction)} 다시 시도`}
+                  <div className="teacher-room-tabs" role="tablist" aria-label="방 상세 보기">
+                    {[
+                      ["share", "공유"],
+                      ["run", "진행"],
+                      ["story", "원고"],
+                      ["analysis", "분석"],
+                    ].map(([value, label]) => (
+                      <button
+                        type="button"
+                        role="tab"
+                        key={value}
+                        aria-selected={activeRoomTab === value}
+                        className={activeRoomTab === value ? "is-selected" : ""}
+                        onClick={() => setRoomTab(value as RoomTab)}
+                      >
+                        {label}
                       </button>
-                    </div>
-                  )}
-
-                  <div className="room-control-row" aria-label="완성 자료 내보내기">
-                    <button type="button" disabled={!canExportStory || exportBusy === "copy-story"} onClick={() => void copyText("story")}>
-                      {exportBusy === "copy-story" ? "복사 중…" : "완성 작품 복사"}
-                    </button>
-                    <button type="button" disabled={!canExportStory || exportBusy === "download-story"} onClick={() => downloadText("story")}>
-                      {exportBusy === "download-story" ? "저장 중…" : "완성 작품 다운로드"}
-                    </button>
-                    <button type="button" disabled={!canExportReport || exportBusy === "copy-report"} onClick={() => void copyText("report")}>
-                      {exportBusy === "copy-report" ? "복사 중…" : "분석 보고서 복사"}
-                    </button>
-                    <button type="button" disabled={!canExportReport || exportBusy === "download-report"} onClick={() => downloadText("report")}>
-                      {exportBusy === "download-report" ? "저장 중…" : "분석 보고서 다운로드"}
-                    </button>
-                    <button type="button" disabled={(!canExportStory && !canExportReport) || exportBusy === "print"} onClick={printExports}>
-                      {exportBusy === "print" ? "인쇄 준비 중…" : "인쇄"}
-                    </button>
-                  </div>
-
-                  <div className="live-story-mini">
-                    {(selectedRoom.entries ?? []).map((entry) => (
-                      <p key={entry.id}><span>{entry.writerName}</span>{entry.skipped ? "이번 차례를 쉬었습니다." : entry.text}</p>
                     ))}
                   </div>
-                </div>
+
+                  {activeRoomTab === "share" && (
+                    <section className="room-tab-panel room-share-panel" role="tabpanel">
+                      <p className="room-code-label">JOIN CODE</p>
+                      <strong className="room-code-display">{selectedRoom.code}</strong>
+                      {qrDataUrl && <Image unoptimized src={qrDataUrl} alt={`방 코드 ${selectedRoom.code} 참여 QR 코드`} width={190} height={190} />}
+                      <div className="share-actions">
+                        <button type="button" onClick={copyJoinLink}>참여 링크 복사</button>
+                        <a href={joinUrl} target="_blank" rel="noreferrer">학생 화면 열기</a>
+                      </div>
+                    </section>
+                  )}
+
+                  {activeRoomTab === "run" && (
+                    <section className="room-tab-panel" role="tabpanel">
+                      {selectedRoom.storyOpener ? <blockquote>“{selectedRoom.storyOpener}”</blockquote> : <p className="ai-loading-copy">AI가 첫 문장을 준비하고 있습니다…</p>}
+                      <div className="writer-slot-grid" aria-label="작가 순서">
+                        {orderedWriterSlots.map((slot) => slot.type === "writer" ? (
+                          <div
+                            key={slot.writer.id}
+                            className={`writer-slot ${slot.writer.kind} ${slot.position === selectedRoom.currentWriterPosition && selectedRoom.status === "active" ? "is-current" : ""}`}
+                          >
+                            <span>{slot.position + 1}</span>
+                            <strong>{slot.writer.name ?? slot.writer.displayName}</strong>
+                            <small>{slot.writer.kind === "ai" ? "SOLAR AI" : "HUMAN"}</small>
+                          </div>
+                        ) : (
+                          <div className="writer-slot empty" key={`empty-${slot.position}`}>
+                            <span>{slot.position + 1}</span><strong>입장 대기</strong><small>HUMAN</small>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="room-control-row">
+                        {(selectedRoom.status === "active" || selectedRoom.status === "lobby") && (
+                          <button className="retro-danger" type="button" disabled={busy} onClick={() => void controlRoom("close")}>활동 마감</button>
+                        )}
+                        {!selectedRoom.storyOpener && <button type="button" onClick={() => void runAi("seed", selectedRoom.id)}>AI 첫 문장 다시 요청</button>}
+                      </div>
+                    </section>
+                  )}
+
+                  {activeRoomTab === "story" && (
+                    <section className="room-tab-panel" role="tabpanel">
+                      {hasStoryEntries ? (
+                        <div className="live-story-mini">
+                          {(selectedRoom.entries ?? []).map((entry) => (
+                            <p key={entry.id}><span>{entry.writerName}</span>{entry.skipped ? "이번 차례를 쉬었습니다." : entry.text}</p>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="empty-manuscript">아직 완성된 문단이 없습니다.</p>
+                      )}
+                    </section>
+                  )}
+
+                  {activeRoomTab === "analysis" && (
+                    <section className="room-tab-panel" role="tabpanel">
+                    <div className="room-control-row">
+                      <button type="button" disabled={!canExportStory || exportBusy === "copy-story"} onClick={() => void copyText("story")}>
+                        {exportBusy === "copy-story" ? "복사 중…" : "완성 작품 복사"}
+                      </button>
+                      <button type="button" disabled={!canExportStory || exportBusy === "download-story"} onClick={() => downloadText("story")}>
+                        {exportBusy === "download-story" ? "저장 중…" : "완성 작품 다운로드"}
+                      </button>
+                      <button type="button" disabled={!canExportReport || exportBusy === "copy-report"} onClick={() => void copyText("report")}>
+                        {exportBusy === "copy-report" ? "복사 중…" : "분석 보고서 복사"}
+                      </button>
+                      <button type="button" disabled={!canExportReport || exportBusy === "download-report"} onClick={() => downloadText("report")}>
+                        {exportBusy === "download-report" ? "저장 중…" : "분석 보고서 다운로드"}
+                      </button>
+                      <button type="button" disabled={(!canExportStory && !canExportReport) || exportBusy === "print"} onClick={printExports}>
+                        {exportBusy === "print" ? "인쇄 준비 중…" : "인쇄"}
+                      </button>
+                    </div>
+                    {selectedRoom.analysisStatus === "complete" && analysisText ? (
+                      <pre className="analysis-preview">{analysisText}</pre>
+                    ) : (
+                      <p className="empty-manuscript">완성 후 AI 분석 보고서가 여기에 표시됩니다.</p>
+                    )}
+                    </section>
+                  )}
+
+                    {(selectedAiFailure || statusFailureAction) && retryAction && (
+                      <div className="retro-window teacher-alert" role="alert">
+                        <div className="window-titlebar">
+                          <span>AI_ERROR.LOG</span>
+                          <i aria-hidden="true">● ● ●</i>
+                        </div>
+                        <strong>{getActionLabel(retryAction)} 작업을 완료하지 못했습니다.</strong>
+                        <p>{selectedAiFailure?.message ?? "AI 작업이 실패 상태입니다. 다시 시도해 주세요."}</p>
+                        <button type="button" disabled={Boolean(aiBusyAction)} onClick={() => void runAi(retryAction, selectedRoom.id)}>
+                          {aiBusyAction === retryAction ? "다시 시도 중…" : `${getActionLabel(retryAction)} 다시 시도`}
+                        </button>
+                      </div>
+                    )}
               </div>
             </article>
           )}
         </section>
+        )}
       </div>
 
       <p className="retro-status" aria-live="polite">{status}</p>
