@@ -3726,7 +3726,7 @@ html[data-theme="light"] .student-writer-rail .is-current {
   }
 
   .retro-brand small,
-  .teacher-account span {
+  .teacher-account-name {
     display: none;
   }
 

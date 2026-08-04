@@ -459,6 +459,8 @@ test("provides persistent readable light and dark modes across all routes", asyn
   assert.match(css, /html\[data-theme="light"\]/);
   assert.match(css, /--shell-text: #101426/);
   assert.match(css, /\.theme-toggle \{[\s\S]*min-height: 44px;/);
+  assert.match(css, /\.retro-brand small,\s*\.teacher-account-name \{\s*display: none;/);
+  assert.doesNotMatch(css, /\.retro-brand small,\s*\.teacher-account span \{\s*display: none;/);
 });
 
 test("keeps student feedback growth-focused without a visible contribution ranking", async () => {
