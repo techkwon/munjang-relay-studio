@@ -5,6 +5,7 @@ import Link from "next/link";
 import { ThemeToggle } from "@/app/components/ThemeToggle";
 
 type RoomStatus = "lobby" | "active" | "complete" | "closed";
+type WriterLevel = "elementary" | "middle" | "high";
 
 type Writer = {
   id: string;
@@ -12,6 +13,7 @@ type Writer = {
   displayName?: string;
   kind: "human" | "ai";
   position: number;
+  level: WriterLevel;
 };
 
 type Entry = {
@@ -52,6 +54,7 @@ type Room = {
   orderMode: "sequential" | "random";
   turnLimit: number;
   turnSeconds: number;
+  writerLevels: WriterLevel[];
   currentTurn: number;
   currentWriterPosition: number;
   turnExpiresAt: number | null;
@@ -83,6 +86,22 @@ function normalizeCode(value: string) {
   return value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);
 }
 
+const LEVEL_LABEL: Record<WriterLevel, string> = {
+  elementary: "초등",
+  middle: "중등",
+  high: "고등",
+};
+
+function normalizeWriterLevel(value: unknown): WriterLevel {
+  if (value === "elementary" || value === "middle" || value === "high") return value;
+  return "elementary";
+}
+
+function readWriterLevel(value: unknown): WriterLevel | null {
+  if (value === "elementary" || value === "middle" || value === "high") return value;
+  return null;
+}
+
 function getErrorMessage(payload: unknown, fallback: string) {
   if (payload && typeof payload === "object" && "error" in payload) {
     const error = (payload as { error?: unknown }).error;
@@ -97,12 +116,16 @@ function normalizeRoom(payload: unknown): Room | null {
   const value = (record.room ?? record) as Record<string, unknown>;
   const code = typeof value.roomCode === "string" ? value.roomCode : typeof value.code === "string" ? value.code : "";
   if (!code) return null;
+  const roomWriterLevels = Array.isArray(value.writerLevels)
+    ? value.writerLevels.map((item) => normalizeWriterLevel(item))
+    : Array.from({ length: Number(value.writerLimit ?? 0) }, () => "elementary" as WriterLevel);
   const rawParticipants = Array.isArray(value.participants) ? value.participants as Array<Record<string, unknown>> : [];
   const participants: Writer[] = rawParticipants.map((writer, index): Writer => ({
     id: String(writer.id ?? `writer-${index}`),
     name: String(writer.writerName ?? writer.name ?? `작가 ${index + 1}`),
     kind: writer.writerType === "ai" || writer.kind === "ai" ? "ai" : "human",
     position: Number(writer.orderPosition ?? writer.slotIndex ?? writer.position ?? index),
+    level: readWriterLevel(writer.writerLevel ?? writer.level) ?? roomWriterLevels[Number(writer.slotIndex ?? writer.position ?? index)] ?? "elementary",
   })).sort((a, b) => a.position - b.position);
   const current = value.currentTurn && typeof value.currentTurn === "object"
     ? value.currentTurn as Record<string, unknown>
@@ -128,6 +151,7 @@ function normalizeRoom(payload: unknown): Room | null {
     writerLimit: Number(value.writerLimit ?? participants.length),
     humanWriterCount: Number(value.humanLimit ?? value.humanWriterCount ?? 1),
     aiWriterCount: Number(value.aiLimit ?? value.aiWriterCount ?? 0),
+    writerLevels: roomWriterLevels,
     orderMode: value.orderMode === "random" ? "random" : "sequential",
     turnLimit: Number(value.turnLimit ?? 8),
     turnSeconds: Number(value.turnSeconds ?? 60),
@@ -420,6 +444,7 @@ export function StudentJoin() {
           ? "AI 작성 중"
           : "기다리는 중"
       : "입장 대기";
+  const meLevelLabel = me ? LEVEL_LABEL[me.level] : null;
 
   return (
     <main className="retro-shell student-shell">
@@ -499,6 +524,7 @@ export function StudentJoin() {
             <div className="student-room-head">
               <div>
                 <span className={`status-chip status-${room.status}`}>{activeStageLabel}</span>
+                {meLevelLabel && <span className="student-level-chip">나의 수준 · {meLevelLabel} 수준</span>}
                 <p className="terminal-kicker">방 {room.code} · {room.orderMode === "random" ? "랜덤 순서" : "차례대로"}</p>
                 <h1 id="room-title">{room.storyTitle || room.title}</h1>
               </div>
@@ -526,7 +552,11 @@ export function StudentJoin() {
                   <div key={writer.id} className={`${writer.kind} ${writer.id === currentWriter?.id && room.status === "active" ? "is-current" : ""} ${writer.id === me?.id ? "is-me" : ""}`}>
                     <span>{writer.position + 1}</span>
                     <strong>{writer.name ?? writer.displayName}</strong>
-                    <small>{writer.id === me?.id ? "나" : writer.kind === "ai" ? "AI" : "작가"}</small>
+                    <small>{writer.id === me?.id
+                      ? `나 · ${LEVEL_LABEL[writer.level]}`
+                      : writer.kind === "ai"
+                        ? `AI · ${LEVEL_LABEL[writer.level]}`
+                        : `학생 · ${LEVEL_LABEL[writer.level]}`}</small>
                   </div>
                 ))}
               </div>

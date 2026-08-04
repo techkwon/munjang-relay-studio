@@ -89,7 +89,7 @@ export async function POST(request: Request) {
     const seedIndex = makeSeedIndex(roomCode, settings.genre);
     const eventIndex = makeEventIndex(roomCode, settings.genre);
     const seed = createFallbackSeed(settings.genre, seedIndex);
-    const aiParticipants = makeAiParticipants(roomCode, settings.writerTypes, now);
+    const aiParticipants = makeAiParticipants(roomCode, settings.writerTypes, now, settings.writerLevels);
 
     await db.batch([
       db
@@ -97,9 +97,9 @@ export async function POST(request: Request) {
           `INSERT INTO rooms (
             room_code, owner_user_id, owner_email, status, writer_limit, human_limit, ai_limit,
             genre, turn_limit, turn_seconds, order_mode, current_turn_index, current_deadline_at,
-            seed_index, event_index, story_title, story_setup, story_opener, seed_source,
+            writer_levels, seed_index, event_index, story_title, story_setup, story_opener, seed_source,
             ai_generation_status, analysis_status, created_at, updated_at
-          ) VALUES (?, ?, ?, 'lobby', ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, 'fallback', 'idle', 'idle', ?, ?)`,
+          ) VALUES (?, ?, ?, 'lobby', ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?, 'fallback', 'idle', 'idle', ?, ?)`,
         )
         .bind(
           roomCode,
@@ -112,6 +112,7 @@ export async function POST(request: Request) {
           settings.turnLimit,
           settings.turnSeconds,
           settings.orderMode,
+          JSON.stringify(settings.writerLevels),
           seedIndex,
           eventIndex,
           seed.title,
@@ -127,7 +128,14 @@ export async function POST(request: Request) {
               id, room_code, writer_name, writer_type, ai_role, token_hash, slot_index, joined_at
             ) VALUES (?, ?, ?, 'ai', ?, NULL, ?, ?)`,
           )
-          .bind(participant.id, participant.roomCode, participant.writerName, participant.aiRole, participant.slotIndex, participant.joinedAt),
+          .bind(
+            participant.id,
+            participant.roomCode,
+            participant.writerName,
+            participant.aiRole,
+            participant.slotIndex,
+            participant.joinedAt,
+          ),
       ),
     ]);
 

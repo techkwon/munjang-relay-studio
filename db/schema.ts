@@ -10,6 +10,7 @@ export const rooms = sqliteTable(
     writerLimit: integer("writer_limit").notNull(),
     humanLimit: integer("human_limit").notNull(),
     aiLimit: integer("ai_limit").notNull().default(0),
+    writerLevels: text("writer_levels").notNull().default("[]"),
     genre: text("genre", { enum: ["all", "adventure", "fantasy", "mystery", "daily", "space"] }).notNull(),
     turnLimit: integer("turn_limit").notNull(),
     turnSeconds: integer("turn_seconds").notNull(),

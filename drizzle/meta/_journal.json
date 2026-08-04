@@ -15,6 +15,13 @@
       "when": 1785771344804,
       "tag": "0001_furry_stingray",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1785886262094,
+      "tag": "0002_writer_levels",
+      "breakpoints": true
     }
   ]
 }

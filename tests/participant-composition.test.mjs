@@ -33,6 +33,18 @@ function participant(id, writerType, slotIndex) {
   };
 }
 
+function room(overrides = {}) {
+  return {
+    room_code: "ROOM42",
+    status: "lobby",
+    writer_limit: 4,
+    human_limit: 2,
+    ai_limit: 2,
+    writer_levels: JSON.stringify(["elementary", "middle", "high", "elementary"]),
+    ...overrides,
+  };
+}
+
 test("accepts one human writer with nine AI writers in exact configured slots", async () => {
   const { makeAiParticipants, parseRoomSettings } = await loadLiveStory();
   const writerTypes = ["human", "ai", "ai", "ai", "ai", "ai", "ai", "ai", "ai", "ai"];
@@ -43,8 +55,9 @@ test("accepts one human writer with nine AI writers in exact configured slots", 
   assert.equal(settings.aiLimit, 9);
   assert.deepEqual(settings.writerTypes, writerTypes);
 
-  const aiParticipants = makeAiParticipants("ABC234", settings.writerTypes, 123);
+  const aiParticipants = makeAiParticipants("ABC234", settings.writerTypes, 123, settings.writerLevels);
   assert.equal(aiParticipants.length, 9);
+  assert.deepEqual(settings.writerLevels, Array.from({ length: 10 }, () => "elementary"));
   assert.deepEqual(
     aiParticipants.map((item) => item.slotIndex),
     [1, 2, 3, 4, 5, 6, 7, 8, 9],
@@ -54,6 +67,37 @@ test("accepts one human writer with nine AI writers in exact configured slots", 
     ["AI 작가 1", "AI 작가 2", "AI 작가 3", "AI 작가 4", "AI 작가 5", "AI 작가 6", "AI 작가 7", "AI 작가 8", "AI 작가 9"],
   );
   assert.equal(new Set(aiParticipants.map((item) => item.aiRole)).size, 9);
+  assert.deepEqual(aiParticipants.map((item) => item.writerLevel), Array.from({ length: 9 }, () => "elementary"));
+});
+
+test("preserves mixed writer levels by configured seat", async () => {
+  const { getParticipantWriterLevel, getRoomWriterLevels, makeAiParticipants, parseRoomSettings, parseRoomWriterLevels, safeParticipant, safeRoom } = await loadLiveStory();
+  const writerTypes = ["human", "ai", "human", "ai"];
+  const writerLevels = ["elementary", "high", "middle", "elementary"];
+  const settings = parseRoomSettings({ writerTypes, writerLevels, turnLimit: 6 });
+  const testRoom = room({ writer_limit: 4, human_limit: 2, ai_limit: 2, writer_levels: JSON.stringify(settings.writerLevels) });
+  const human = participant("pt_2", "human", 2);
+
+  assert.deepEqual(settings.writerLevels, writerLevels);
+  assert.deepEqual(getRoomWriterLevels(testRoom), writerLevels);
+  assert.equal(getParticipantWriterLevel(testRoom, human), "middle");
+  assert.equal(safeParticipant(human, testRoom).writerLevel, "middle");
+
+  const aiParticipants = makeAiParticipants("ROOM42", settings.writerTypes, 123, settings.writerLevels);
+  assert.deepEqual(aiParticipants.map((item) => item.writerLevel), ["high", "elementary"]);
+
+  const safe = safeRoom(testRoom, [
+    participant("pt_0", "human", 0),
+    participant(aiParticipants[0].id, aiParticipants[0].writerType, aiParticipants[0].slotIndex),
+    human,
+    participant(aiParticipants[1].id, aiParticipants[1].writerType, aiParticipants[1].slotIndex),
+  ]);
+  assert.deepEqual(safe.writerLevels, writerLevels);
+  assert.deepEqual(safe.participants.map((item) => item.writerLevel), ["elementary", "high", "middle", "elementary"]);
+  assert.deepEqual(
+    parseRoomWriterLevels('["elementary","invalid","high",null]', 4),
+    ["elementary", "elementary", "high", "elementary"],
+  );
 });
 
 test("preserves backward compatible count payloads up to ten total writers", async () => {
@@ -64,6 +108,7 @@ test("preserves backward compatible count payloads up to ten total writers", asy
   assert.equal(settings.humanLimit, 1);
   assert.equal(settings.aiLimit, 9);
   assert.deepEqual(settings.writerTypes, ["human", "ai", "ai", "ai", "ai", "ai", "ai", "ai", "ai", "ai"]);
+  assert.deepEqual(settings.writerLevels, Array.from({ length: 10 }, () => "elementary"));
 });
 
 test("keeps anonymous room previews accurate without exposing room internals", async () => {
@@ -75,6 +120,7 @@ test("keeps anonymous room previews accurate without exposing room internals", a
       writer_limit: 10,
       human_limit: 1,
       ai_limit: 9,
+      writer_levels: JSON.stringify(["elementary", "middle", "high", "elementary", "middle", "high", "elementary", "middle", "high", "elementary"]),
       teacher_id: "private-teacher-id",
       story_setup: "private setup",
       story_opener: "private opener",
@@ -143,4 +189,17 @@ test("rejects impossible writer role compositions", async () => {
     /2명에서 10명/,
   );
   assert.throws(() => parseRoomSettings({ writerTypes: ["human", "bot"], turnLimit: 6 }), /사람 또는 AI/);
+});
+
+test("rejects invalid writer level payloads", async () => {
+  const { parseRoomSettings } = await loadLiveStory();
+
+  assert.throws(
+    () => parseRoomSettings({ writerTypes: ["human", "ai"], writerLevels: ["elementary"], turnLimit: 6 }),
+    /참가자 수와 수준 설정 개수/,
+  );
+  assert.throws(
+    () => parseRoomSettings({ writerTypes: ["human", "ai"], writerLevels: ["elementary", "college"], turnLimit: 6 }),
+    /참가자 수준은 초등\/중등\/고등/,
+  );
 });

@@ -4,6 +4,7 @@ import {
   errorResponse,
   getDb,
   getParticipantByToken,
+  getParticipantWriterLevel,
   getParticipants,
   getRoomByCode,
   getStoryTurns,
@@ -35,7 +36,7 @@ export async function GET(request: Request) {
 
     if (token) {
       const participant = await getParticipantByToken(db, roomCode, token);
-      return json({ room: safeRoom(room, participants, turns), participant: safeParticipant(participant) });
+      return json({ room: safeRoom(room, participants, turns), participant: safeParticipant(participant, room) });
     }
 
     return json({ room: safeRoomPreview(room, participants) });
@@ -92,7 +93,6 @@ async function join(body: Record<string, unknown>) {
   if (participants.some((participant) => participant.writer_name === writerName)) {
     throw new ApiError("이미 사용 중인 작가명이에요. 다른 이름을 입력해 주세요.", 409);
   }
-
   const now = Date.now();
   const token = makeParticipantToken();
   const tokenHash = await sha256Hex(token);
@@ -122,7 +122,8 @@ async function join(body: Record<string, unknown>) {
   return json(
     {
       room: safeRoom(nextRoom, nextParticipants),
-      participant: participant ? safeParticipant(participant) : null,
+      participant: participant ? safeParticipant(participant, nextRoom) : null,
+      writerLevel: participant ? getParticipantWriterLevel(nextRoom, participant) : "elementary",
       token,
       message: "방에 입장했어요.",
     },
@@ -190,5 +191,5 @@ async function submit(body: Record<string, unknown>, token: string) {
 
   room = await advanceExpiredTurns(db, await getRoomByCode(db, roomCode));
   const [participants, turns] = await Promise.all([getParticipants(db, roomCode), getStoryTurns(db, roomCode)]);
-  return json({ room: safeRoom(room, participants, turns), participant: safeParticipant(participant), message: "문장이 이어졌어요." });
+  return json({ room: safeRoom(room, participants, turns), participant: safeParticipant(participant, room), message: "문장이 이어졌어요." });
 }

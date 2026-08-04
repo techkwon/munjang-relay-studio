@@ -1,0 +1,1 @@
+ALTER TABLE `rooms` ADD `writer_levels` text DEFAULT '[]' NOT NULL;

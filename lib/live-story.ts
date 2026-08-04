@@ -4,6 +4,7 @@ export type Genre = "all" | "adventure" | "fantasy" | "mystery" | "daily" | "spa
 export type RoomStatus = "lobby" | "active" | "complete" | "closed";
 export type TurnStatus = "pending" | "submitted" | "skipped";
 export type WriterType = "human" | "ai";
+export type WriterLevel = "elementary" | "middle" | "high";
 export type OrderMode = "sequential" | "random";
 export type SeedSource = "ai" | "fallback";
 export type AsyncStatus = "idle" | "pending" | "running" | "complete" | "failed";
@@ -57,6 +58,7 @@ export type RoomRow = {
   ai_generation_state: string | null;
   analysis_status: AsyncStatus;
   analysis_report: string | null;
+  writer_levels: string | null;
   created_at: number;
   updated_at: number;
   started_at: number | null;
@@ -94,6 +96,7 @@ export type NewRoomSettings = {
   humanLimit: number;
   aiLimit: number;
   writerTypes: WriterType[];
+  writerLevels: WriterLevel[];
   genre: Genre;
   turnLimit: number;
   turnSeconds: number;
@@ -204,6 +207,7 @@ export async function readJsonObject(request: Request): Promise<Record<string, u
 export function parseRoomSettings(body: Record<string, unknown>): NewRoomSettings {
   const genre = parseGenre(body.genre);
   const writerTypes = parseWriterTypes(body);
+  const writerLevels = parseWriterLevels(body, writerTypes);
   const writerLimit = writerTypes.length;
   const humanLimit = writerTypes.filter((type) => type === "human").length;
   const aiLimit = writerTypes.length - humanLimit;
@@ -218,6 +222,7 @@ export function parseRoomSettings(body: Record<string, unknown>): NewRoomSetting
     humanLimit,
     aiLimit,
     writerTypes,
+    writerLevels,
     genre,
     turnLimit,
     turnSeconds: parseAllowedNumber(body.turnSeconds, TURN_SECONDS, 60),
@@ -278,6 +283,7 @@ export function safeRoom(room: RoomRow, participants: ParticipantRow[] = [], tur
     seedSource: room.seed_source,
     aiGenerationStatus: room.ai_generation_status,
     aiGenerationState: safeJsonParse(room.ai_generation_state),
+    writerLevels: getRoomWriterLevels(room),
     analysisStatus: room.analysis_status,
     analysisReport: safeJsonParse(room.analysis_report),
     createdAt: room.created_at,
@@ -286,7 +292,7 @@ export function safeRoom(room: RoomRow, participants: ParticipantRow[] = [], tur
     completedAt: room.completed_at,
     closedAt: room.closed_at,
     participants: participants.map((participant) => ({
-      ...safeParticipant(participant),
+      ...safeParticipant(participant, room),
       orderPosition: orderPosition.get(participant.id) ?? participant.slot_index,
     })),
     currentTurn: currentTurn ? safeTurn(currentTurn) : null,
@@ -307,11 +313,12 @@ export function safeRoomPreview(room: RoomRow, participants: ParticipantRow[] = 
   };
 }
 
-export function safeParticipant(participant: ParticipantRow) {
+export function safeParticipant(participant: ParticipantRow, room?: RoomRow) {
   return {
     id: participant.id,
     writerName: participant.writer_name,
     writerType: participant.writer_type,
+    writerLevel: room ? getParticipantWriterLevel(room, participant) : "elementary",
     aiRole: participant.ai_role,
     slotIndex: participant.slot_index,
     joinedAt: participant.joined_at,
@@ -470,7 +477,7 @@ export function nextHumanSlot(participants: ParticipantRow[], humanLimit: number
   return null;
 }
 
-export function makeAiParticipants(roomCode: string, writerTypes: WriterType[], now: number) {
+export function makeAiParticipants(roomCode: string, writerTypes: WriterType[], now: number, writerLevels: WriterLevel[] = []) {
   let aiIndex = 0;
   return writerTypes.flatMap((writerType, slotIndex) => {
     if (writerType !== "ai") return [];
@@ -481,6 +488,7 @@ export function makeAiParticipants(roomCode: string, writerTypes: WriterType[], 
         roomCode,
         writerName: `AI 작가 ${aiIndex}`,
         writerType: "ai" as const,
+        writerLevel: writerLevels[slotIndex] ?? "elementary",
         aiRole: AI_ROLES[(aiIndex - 1) % AI_ROLES.length],
         tokenHash: null,
         slotIndex,
@@ -535,6 +543,64 @@ function parseWriterTypes(body: Record<string, unknown>): WriterType[] {
   }
   validateWriterComposition(writerTypes);
   return writerTypes;
+}
+
+function parseWriterLevel(value: unknown): WriterLevel | null {
+  if (value === "elementary" || value === "middle" || value === "high") return value;
+  return null;
+}
+
+function parseWriterLevels(body: Record<string, unknown>, writerTypes: WriterType[]): WriterLevel[] {
+  if (Array.isArray(body.writerLevels)) {
+    const parsed = body.writerLevels.map((value) => {
+      const level = parseWriterLevel(value);
+      if (!level) throw new ApiError("참가자 수준은 초등/중등/고등만 설정할 수 있어요.", 400);
+      return level;
+    });
+    if (parsed.length !== writerTypes.length) {
+      throw new ApiError("참가자 수와 수준 설정 개수가 같아야 해요.", 400);
+    }
+    return parsed;
+  }
+
+  if (Array.isArray(body.writerProfiles)) {
+    const parsed = body.writerProfiles
+      .map((value) => {
+        if (value && typeof value === "object") return parseWriterLevel((value as Record<string, unknown>).level);
+        return null;
+      })
+      .filter(Boolean) as Array<WriterLevel>;
+    if (parsed.length === writerTypes.length) return parsed;
+  }
+
+  return Array.from({ length: writerTypes.length }, () => "elementary");
+}
+
+export function parseRoomWriterLevels(value: unknown, fallbackLength: number) {
+  const defaultLevels = Array.from({ length: fallbackLength }, () => "elementary" as WriterLevel);
+  const preserveSeatPositions = (levels: unknown[]) =>
+    defaultLevels.map((fallback, index) => parseWriterLevel(levels[index]) ?? fallback);
+
+  if (Array.isArray(value)) {
+    return preserveSeatPositions(value);
+  }
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) return preserveSeatPositions(parsed);
+    } catch {
+      // no-op
+    }
+  }
+  return defaultLevels;
+}
+
+export function getRoomWriterLevels(room: Pick<RoomRow, "writer_levels" | "writer_limit">) {
+  return parseRoomWriterLevels(room.writer_levels, room.writer_limit);
+}
+
+export function getParticipantWriterLevel(room: Pick<RoomRow, "writer_levels" | "writer_limit">, participant: Pick<ParticipantRow, "slot_index">) {
+  return getRoomWriterLevels(room)[participant.slot_index] ?? "elementary";
 }
 
 function validateWriterComposition(writerTypes: WriterType[]) {

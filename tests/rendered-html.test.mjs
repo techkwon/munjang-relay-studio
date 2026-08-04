@@ -149,6 +149,7 @@ test("allows anonymous students to find and join rooms", async () => {
   assert.match(studentJoin, /계정이나 이메일은 필요하지 않아요/);
   assert.match(studentJoin, /fetch\("\/api\/rooms"/);
   assert.match(studentJoin, /action: "join"/);
+  assert.match(studentJoin, /나의 수준 · \{meLevelLabel\} 수준/);
   assert.doesNotMatch(studentRoute, /requireChatGPTUser|getChatGPTUser/);
   assert.match(studentRoute, /const action = typeof body\.action === "string" \? body\.action : "join"/);
 });
@@ -184,6 +185,52 @@ test("creates normalized D1 tables with room participant and story-turn relation
     assert.match(tables, /^participants$/m);
     assert.match(tables, /^rooms$/m);
     assert.match(tables, /^story_turns$/m);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("migrates existing rooms to elementary-compatible per-seat writer levels", async () => {
+  const [initialMigration, claimMigration, levelMigration] = await Promise.all([
+    readProjectFile("drizzle/0000_sharp_garia.sql"),
+    readProjectFile("drizzle/0001_furry_stingray.sql"),
+    readProjectFile("drizzle/0002_writer_levels.sql"),
+  ]);
+  const tempDir = mkdtempSync(join(tmpdir(), "munjang-itgi-level-migration-"));
+  const dbPath = join(tempDir, "test.sqlite");
+  const initialPath = join(tempDir, "0000.sql");
+  const claimPath = join(tempDir, "0001.sql");
+  const levelPath = join(tempDir, "0002.sql");
+
+  try {
+    writeFileSync(initialPath, initialMigration);
+    writeFileSync(claimPath, claimMigration);
+    writeFileSync(levelPath, levelMigration);
+    execFileSync("sqlite3", [dbPath, `.read ${initialPath}`], { encoding: "utf8" });
+    execFileSync("sqlite3", [dbPath, `.read ${claimPath}`], { encoding: "utf8" });
+    execFileSync(
+      "sqlite3",
+      [
+        dbPath,
+        "INSERT INTO rooms (room_code, owner_user_id, owner_email, writer_limit, human_limit, ai_limit, genre, turn_limit, turn_seconds, seed_index, event_index, story_title, story_setup, story_opener, created_at, updated_at) VALUES ('LEGACY', 'owner', 'teacher@example.test', 4, 3, 1, 'all', 8, 60, 0, 0, 'title', 'setup', 'opener', 1, 1);",
+      ],
+      { encoding: "utf8" },
+    );
+    execFileSync("sqlite3", [dbPath, `.read ${levelPath}`], { encoding: "utf8" });
+
+    const legacyValue = execFileSync(
+      "sqlite3",
+      [dbPath, "SELECT writer_levels FROM rooms WHERE room_code = 'LEGACY';"],
+      { encoding: "utf8" },
+    ).trim();
+    const column = execFileSync(
+      "sqlite3",
+      [dbPath, "SELECT name || '|' || \"notnull\" || '|' || dflt_value FROM pragma_table_info('rooms') WHERE name = 'writer_levels';"],
+      { encoding: "utf8" },
+    ).trim();
+
+    assert.equal(legacyValue, "[]");
+    assert.equal(column, "writer_levels|1|'[]'");
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
@@ -502,7 +549,9 @@ test("supports ten ordered human or AI seats with a focused teacher workflow", a
 
   assert.match(teacher, /const PARTICIPANT_COUNTS = \[2, 3, 4, 5, 6, 7, 8, 9, 10\]/);
   assert.match(teacher, /useState<WriterKind\[]>\(\["human", "human", "human", "ai"\]\)/);
+  assert.match(teacher, /useState<WriterLevel\[]>\(\["elementary", "elementary", "elementary", "elementary"\]\)/);
   assert.match(teacher, /writerTypes: activeWriterTypes/);
+  assert.match(teacher, /writerLevels: formWriterLevels/);
   assert.match(teacher, /참여자별 작가 유형/);
   assert.match(teacher, />\s*인간\s*<\/button>/);
   assert.match(teacher, />\s*AI\s*<\/button>/);
@@ -510,10 +559,39 @@ test("supports ten ordered human or AI seats with a focused teacher workflow", a
   assert.match(teacher, /const nextAiRoom = rooms\.find/);
   assert.match(teacher, /\[aiBusyAction, aiFailure\?\.roomId, busy, rooms\]/);
   assert.match(liveStory, /writerTypes: WriterType\[]/);
+  assert.match(liveStory, /writerLevels: WriterLevel\[]/);
+  assert.match(liveStory, /return Array\.from\(\{ length: writerTypes\.length \}, \(\) => "elementary"\)/);
   assert.match(liveStory, /writerTypes\.length < 2 \|\| writerTypes\.length > 10/);
   assert.match(liveStory, /AI 작가는 한 방에 최대 9명/);
-  assert.match(teacherRoute, /makeAiParticipants\(roomCode, settings\.writerTypes, now\)/);
+  assert.match(teacherRoute, /makeAiParticipants\(roomCode, settings\.writerTypes, now, settings\.writerLevels\)/);
+  assert.match(teacher, /참여자별 작가 유형/);
+  assert.match(teacher, /AI 글 수준/);
+  assert.match(teacher, /학생 수준/);
+  assert.match(teacher, /사람 좌석이 여러 수준이면 학생은 입장 순서대로 비어 있는 사람 좌석에 배정됩니다\./);
+  assert.match(teacher, /const levelSummary = LEVEL_OPTIONS/);
+  assert.match(teacher, /writer-level-summary/);
   assert.match(studentRoute, /nextHumanSlot\(participants, room\.human_limit, room\.writer_limit\)/);
+});
+
+test("keeps classroom level controls and contrast selectors readable", async () => {
+  const [teacher, student, css] = await Promise.all([
+    readProjectFile("app/teacher/TeacherDashboard.tsx"),
+    readProjectFile("app/join/StudentJoin.tsx"),
+    readProjectFile("app/globals.css"),
+  ]);
+
+  assert.match(teacher, /<label className="writer-level-select">/);
+  assert.match(teacher, /aria-label=\{`\$\{index \+ 1\}번 \$\{kind === "human"/);
+  assert.match(teacher, /"학생 수준" : "AI 글 수준"\}`\}/);
+  assert.match(teacher, /onChange=\{\(event\) => setWriterLevel\(index, event\.target\.value as WriterLevel\)\}/);
+  assert.match(teacher, /writerLevels: Array\.from\(/);
+  assert.match(student, /readWriterLevel\(writer\.writerLevel \?\? writer\.level\)/);
+  assert.match(student, /className="student-level-chip"/);
+  assert.match(css, /\.writer-level-select > select \{[\s\S]*min-height: 44px;[\s\S]*color: var\(--y2k-ink\);/);
+  assert.match(css, /\.teacher-next-action \{[\s\S]*background: #f6f9ff;[\s\S]*color: var\(--y2k-ink\);/);
+  assert.match(css, /\.teacher-next-action \.terminal-kicker,[\s\S]*\.teacher-next-action > div > strong,[\s\S]*\.teacher-next-action > div > span/);
+  assert.match(css, /\.room-card-top small,[\s\S]*\.room-card-metrics,[\s\S]*\.online-chip,[\s\S]*\.teacher-account-name/);
+  assert.match(css, /html\[data-theme="light"\] \.teacher-next-action/);
 });
 
 test("constrains Solar output to preserve student voice and evidence-based feedback", async () => {
@@ -526,7 +604,7 @@ test("constrains Solar output to preserve student voice and evidence-based feedb
   assert.match(aiRoute, /이전 문단의 구체적 단서나 표현 하나를 반드시 다시 사용한다/);
   assert.match(aiRoute, /새로운 사건\/사물은 한 가지만 추가한다/);
   assert.match(aiRoute, /다음 작가가 이어 쓸 행동이나 질문을 남긴다/);
-  assert.match(aiRoute, /분량, 비율, 순서를 실력으로 해석하지 말고/);
+  assert.match(aiRoute, /분량·비율·순서를 실력으로 해석하지 않는다/);
   assert.match(aiRoute, /minLength: 30, maxLength: 100/);
   assert.match(aiRoute, /minLength: 120, maxLength: 300/);
   assert.match(aiRoute, /function limitTextAtBoundary/);

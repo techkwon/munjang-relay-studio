@@ -8,6 +8,7 @@ import { ThemeToggle } from "@/app/components/ThemeToggle";
 
 type RoomStatus = "lobby" | "active" | "complete" | "closed";
 type WriterKind = "human" | "ai";
+type WriterLevel = "elementary" | "middle" | "high";
 type TeacherView = "rooms" | "create";
 type RoomTab = "share" | "run" | "story" | "analysis";
 
@@ -17,6 +18,7 @@ type RoomWriter = {
   displayName?: string;
   kind: WriterKind;
   position: number;
+  level: WriterLevel;
 };
 
 type RoomEntry = {
@@ -36,6 +38,7 @@ type Room = {
   writerLimit: number;
   humanWriterCount: number;
   aiWriterCount: number;
+  writerLevels: WriterLevel[];
   orderMode: "sequential" | "random";
   turnLimit: number;
   turnSeconds: number;
@@ -68,6 +71,16 @@ const GENRES = [
 const PARTICIPANT_COUNTS = [2, 3, 4, 5, 6, 7, 8, 9, 10] as const;
 const TURN_LIMITS = [6, 8, 10, 12] as const;
 const TURN_SECONDS = [45, 60, 90] as const;
+const LEVEL_OPTIONS: Array<{ value: WriterLevel; label: string }> = [
+  { value: "elementary", label: "초등" },
+  { value: "middle", label: "중등" },
+  { value: "high", label: "고등" },
+];
+const LEVEL_LABEL: Record<WriterLevel, string> = {
+  elementary: "초등",
+  middle: "중등",
+  high: "고등",
+};
 
 const STATUS_LABEL: Record<RoomStatus, string> = {
   lobby: "입장 대기",
@@ -75,6 +88,11 @@ const STATUS_LABEL: Record<RoomStatus, string> = {
   complete: "완성",
   closed: "마감",
 };
+
+function normalizeWriterLevel(value: unknown): WriterLevel {
+  if (value === "elementary" || value === "middle" || value === "high") return value;
+  return "elementary";
+}
 
 function getErrorMessage(payload: unknown, fallback: string) {
   if (payload && typeof payload === "object" && "error" in payload) {
@@ -90,12 +108,16 @@ function normalizeRoom(payload: unknown): Room | null {
   const value = (record.room ?? record) as Record<string, unknown>;
   const code = typeof value.roomCode === "string" ? value.roomCode : typeof value.code === "string" ? value.code : "";
   if (!code) return null;
+  const roomWriterLevels = Array.isArray(value.writerLevels)
+    ? value.writerLevels.map((item) => normalizeWriterLevel(item))
+    : undefined;
   const rawParticipants = Array.isArray(value.participants) ? value.participants as Array<Record<string, unknown>> : [];
   const participants: RoomWriter[] = rawParticipants.map((writer, index): RoomWriter => ({
     id: String(writer.id ?? `writer-${index}`),
     name: String(writer.writerName ?? writer.name ?? `작가 ${index + 1}`),
     kind: writer.writerType === "ai" || writer.kind === "ai" ? "ai" : "human",
     position: Number(writer.orderPosition ?? writer.slotIndex ?? writer.position ?? index),
+    level: normalizeWriterLevel(writer.writerLevel ?? writer.level ?? roomWriterLevels?.[Number(writer.slotIndex ?? writer.position ?? index)]),
   })).sort((a, b) => a.position - b.position);
   const current = value.currentTurn && typeof value.currentTurn === "object"
     ? value.currentTurn as Record<string, unknown>
@@ -120,6 +142,10 @@ function normalizeRoom(payload: unknown): Room | null {
     writerLimit: Number(value.writerLimit ?? participants.length),
     humanWriterCount: Number(value.humanLimit ?? value.humanWriterCount ?? 1),
     aiWriterCount: Number(value.aiLimit ?? value.aiWriterCount ?? 0),
+    writerLevels: Array.from(
+      { length: Number(value.writerLimit ?? participants.length) },
+      (_, index) => roomWriterLevels?.[index] ?? "elementary",
+    ),
     orderMode: value.orderMode === "random" ? "random" : "sequential",
     turnLimit: Number(value.turnLimit ?? 8),
     turnSeconds: Number(value.turnSeconds ?? 60),
@@ -234,6 +260,7 @@ export function TeacherDashboard({
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [selectedRoom, setSelectedRoom] = useState<Room | null>(null);
   const [writerTypes, setWriterTypes] = useState<WriterKind[]>(["human", "human", "human", "ai"]);
+  const [writerLevels, setWriterLevels] = useState<WriterLevel[]>(["elementary", "elementary", "elementary", "elementary"]);
   const [genre, setGenre] = useState("all");
   const [turnLimit, setTurnLimit] = useState(8);
   const [turnSeconds, setTurnSeconds] = useState(60);
@@ -289,6 +316,10 @@ export function TeacherDashboard({
   const effectiveTeacherView = rooms.length === 0 ? "create" : teacherView;
   const defaultRoomTab: RoomTab = selectedRoom?.status === "lobby" ? "share" : selectedRoom?.status === "active" ? "run" : "analysis";
   const activeRoomTab = roomTab ?? defaultRoomTab;
+  const formWriterLevels = activeWriterTypes.map((_, index) => writerLevels[index] ?? "elementary");
+  const levelSummary = LEVEL_OPTIONS
+    .map((option) => `${option.label} ${formWriterLevels.filter((level) => level === option.value).length}`)
+    .join(" · ");
 
   const loadRooms = useCallback(async (quiet = false) => {
     try {
@@ -504,6 +535,11 @@ export function TeacherDashboard({
       if (!next.includes("human")) next[0] = "human";
       return next;
     });
+    setWriterLevels((current) => {
+      const next = current.slice(0, nextCount);
+      while (next.length < nextCount) next.push("elementary");
+      return next;
+    });
     setTurnLimit((current) => Math.max(current, nextCount <= 6 ? 6 : nextCount <= 8 ? 8 : nextCount <= 10 ? 10 : 12));
   }
 
@@ -519,6 +555,14 @@ export function TeacherDashboard({
     setWriterTypes((current) => {
       const next = [...current];
       next[index] = kind;
+      return next;
+    });
+  }
+
+  function setWriterLevel(index: number, level: WriterLevel) {
+    setWriterLevels((current) => {
+      const next = [...current];
+      next[index] = level;
       return next;
     });
   }
@@ -540,6 +584,7 @@ export function TeacherDashboard({
           aiLimit: aiWriterCount,
           writerLimit: totalWriters,
           writerTypes: activeWriterTypes,
+          writerLevels: formWriterLevels,
           genre,
           turnLimit,
           turnSeconds,
@@ -704,9 +749,22 @@ export function TeacherDashboard({
                       AI
                     </button>
                   </div>
+                  <label className="writer-level-select">
+                    <span>{kind === "human" ? "학생 수준" : "AI 글 수준"}</span>
+                    <select
+                      value={formWriterLevels[index]}
+                      onChange={(event) => setWriterLevel(index, event.target.value as WriterLevel)}
+                      aria-label={`${index + 1}번 ${kind === "human" ? "학생 수준" : "AI 글 수준"}`}
+                    >
+                      {LEVEL_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    </select>
+                  </label>
                 </div>
               ))}
             </div>
+
+            <div className="writer-level-summary" aria-label={`참가자 수준 요약 ${levelSummary}`}>{levelSummary}</div>
+            <p className="writer-seat-note">사람 좌석이 여러 수준이면 학생은 입장 순서대로 비어 있는 사람 좌석에 배정됩니다.</p>
 
             <p className={`writer-total ${!canCreateRoom ? "is-error" : ""}`}>
               TOTAL · {totalWriters}명 · HUMAN {humanWriterCount} · AI {aiWriterCount}
@@ -889,11 +947,11 @@ export function TeacherDashboard({
                           >
                             <span>{slot.position + 1}</span>
                             <strong>{slot.writer.name ?? slot.writer.displayName}</strong>
-                            <small>{slot.writer.kind === "ai" ? "SOLAR AI" : "HUMAN"}</small>
+                            <small>{slot.writer.kind === "ai" ? `AI · ${LEVEL_LABEL[slot.writer.level]}` : `학생 · ${LEVEL_LABEL[slot.writer.level]}`}</small>
                           </div>
                         ) : (
                           <div className="writer-slot empty" key={`empty-${slot.position}`}>
-                            <span>{slot.position + 1}</span><strong>입장 대기</strong><small>HUMAN</small>
+                            <span>{slot.position + 1}</span><strong>입장 대기</strong><small>HUMAN · {LEVEL_LABEL[selectedRoom.writerLevels[slot.position] ?? "elementary"]}</small>
                           </div>
                         ))}
                       </div>

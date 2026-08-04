@@ -5,7 +5,9 @@ import {
   D1Database,
   errorResponse,
   getDb,
+  getParticipantWriterLevel,
   getParticipants,
+  getRoomWriterLevels,
   getRoomByCode,
   getStoryTurns,
   json,
@@ -15,8 +17,10 @@ import {
   safeRoom,
   type ParticipantRow,
   type RoomRow,
+  type WriterLevel,
   type StoryTurnRow,
 } from "@/lib/live-story";
+import { buildContinuationLevelGuidance, buildReportLevelGuidance, buildSeedLevelGuidance, WRITER_LEVEL_LABELS } from "@/lib/ai-levels";
 import { generateSolarJson } from "@/lib/solar";
 
 export const dynamic = "force-dynamic";
@@ -49,6 +53,7 @@ type WritingReport = {
 type HumanMetric = {
   participant: ParticipantRow;
   promptName: string;
+  level: WriterLevel;
   paragraphs: number;
   characters: number;
   contributionShare: number;
@@ -100,6 +105,7 @@ async function seedRoom(db: D1Database, room: RoomRow) {
   if (claimResult.meta?.changes !== 1) throw new ApiError("이미 AI 첫 문장을 준비하고 있어요.", 409);
 
   try {
+    const levelNotes = buildSeedLevelGuidance(getRoomWriterLevels(room));
     const seed = sanitizeSeed(
       await generateSolarJson<SeedResult>({
         schemaName: "story_seed",
@@ -110,7 +116,7 @@ async function seedRoom(db: D1Database, room: RoomRow) {
           {
             role: "system",
             content:
-              "너는 초등 3-6학년 교실용 릴레이 글쓰기 활동을 여는 한국어 작가다. 안전하고 따뜻한 모험감을 주되 폭력, 혐오, 선정성, 개인정보, 공포 과잉은 피한다. 흔한 클리셰, 메타 설명, 지시문 없이 반드시 JSON 스키마만 쓴다.",
+              `너는 초중고 교실용 릴레이 글쓰기 활동을 여는 한국어 작가다. 안전하고 따뜻한 모험감을 주되 폭력, 혐오, 선정성, 개인정보, 공포 과잉은 피한다. 흔한 클리셰, 메타 설명, 지시문 없이 반드시 JSON 스키마만 쓴다.\n${levelNotes}`,
           },
           {
             role: "user",
@@ -177,6 +183,8 @@ async function continueAiTurn(db: D1Database, initialRoom: RoomRow) {
 
   try {
     const [participants, turns] = await Promise.all([getParticipants(db, room.room_code), getStoryTurns(db, room.room_code)]);
+    const ai = participants.find((participant) => participant.id === turn.participant_id);
+    const aiLevel = ai ? getParticipantWriterLevel(room, ai) : "elementary";
     const paragraph = sanitizeParagraph(
       (
         await generateSolarJson<ContinueResult>({
@@ -188,7 +196,7 @@ async function continueAiTurn(db: D1Database, initialRoom: RoomRow) {
             {
               role: "system",
               content:
-                "너는 초등 3-6학년 교실용 릴레이 이야기에 함께 참여하는 AI 작가다. 앞 사람이 남긴 단서와 말투를 존중한다. 쉬운 한국어 한 문단만 쓰고, 개인정보, 과격한 폭력, 비난, 순위 표현을 피한다. 이야기를 처음부터 다시 시작하거나 성급히 끝내지 않는다.",
+                `너는 초중고 교실용 릴레이 이야기에 함께 참여하는 AI 작가다. 앞 문단의 단서를 존중하고 문장 톤을 자연스럽게 이어가며, 개인정보·과격한 폭력·차별적 표현은 피한다. 처음부터 다시 시작하거나 성급히 결말을 닫지 마라.\n${buildContinuationLevelGuidance(aiLevel)}`,
             },
             {
               role: "user",
@@ -237,7 +245,7 @@ async function reportRoom(db: D1Database, initialRoom: RoomRow) {
 
   try {
     const participants = await getParticipants(db, room.room_code);
-    const metrics = buildHumanMetrics(participants, turns);
+    const metrics = buildHumanMetrics(room, participants, turns);
     const solarReport = await generateSolarJson<WritingReport>({
       schemaName: "writing_report",
       schema: reportSchema,
@@ -247,7 +255,7 @@ async function reportRoom(db: D1Database, initialRoom: RoomRow) {
         {
           role: "system",
           content:
-            "너는 초등학생 글쓰기 활동을 돕는 교사 보조자다. 사람 작가만 대상으로 관찰 가능한 문장 근거에 기반해 말한다. 분량, 비율, 순서를 실력으로 해석하지 말고, 순위·점수·비난 없이 구체적 장점과 다음 연습을 제안한다. 근거가 부족하면 제한적으로 말한다. 반드시 JSON 스키마를 지킨다.",
+            `너는 초중고 학생이 함께 쓰는 교실 글쓰기 활동을 돕는 교사 보조자다. 사람 작가의 문장 근거만 분석하고, 분량·비율·순서를 실력으로 해석하지 않는다. 순위화·점수화 없이 장점과 다음 연습으로 제안한다. 근거가 부족하면 과장 없이 제한적으로 말한다. 반드시 JSON 스키마를 지킨다.\n${buildReportLevelGuidance(metrics.map((metric) => ({ name: metric.promptName, level: metric.level })))}`,
         },
         {
           role: "user",
@@ -420,20 +428,23 @@ function buildContinuePrompt(room: RoomRow, turn: StoryTurnRow, participants: Pa
     })
     .join("\n");
   const ai = participants.find((participant) => participant.id === turn.participant_id);
+  const aiLevel = ai ? getParticipantWriterLevel(room, ai) : "elementary";
+  const levelHint = buildContinuationLevelGuidance(aiLevel);
   return [
     `장르: ${room.genre}`,
     `제목: ${room.story_title}`,
     `상황: ${room.story_setup}`,
     `첫 문장: ${room.story_opener}`,
     `현재 차례: ${turn.turn_index + 1}/${room.turn_limit}`,
-    `AI 작가 역할: ${ai?.ai_role ?? "이야기 조력자"}`,
+    `현재 AI 작가: ${ai?.writer_name ?? "AI 작가"} / 역할: ${ai?.ai_role ?? "이야기 조력자"} / 수준: ${WRITER_LEVEL_LABELS[aiLevel]}`,
+    `수준 규칙: ${levelHint}`,
     "이미 제출된 문단:",
     submitted || "(아직 제출된 문단 없음)",
     "조건: 이전 문단의 구체적 단서나 표현 하나를 반드시 다시 사용한다. 새로운 사건/사물은 한 가지만 추가한다. 120-300자 한국어 한 문단으로 쓴다. 첫 문장을 반복하지 말고, 이야기를 다시 시작하지 말고, 마지막 차례가 아니면 결말을 확정하지 않는다. 다음 작가가 이어 쓸 행동이나 질문을 남긴다.",
   ].join("\n");
 }
 
-function buildHumanMetrics(participants: ParticipantRow[], turns: StoryTurnRow[]): HumanMetric[] {
+function buildHumanMetrics(room: RoomRow, participants: ParticipantRow[], turns: StoryTurnRow[]): HumanMetric[] {
   const humans = participants.filter((participant) => participant.writer_type === "human");
   const humanTurns = turns.filter((turn) => turn.writer_type === "human" && turn.status === "submitted" && turn.text);
   const totalCharacters = humanTurns.reduce((sum, turn) => sum + (turn.text?.length ?? 0), 0);
@@ -444,6 +455,7 @@ function buildHumanMetrics(participants: ParticipantRow[], turns: StoryTurnRow[]
     return {
       participant,
       promptName: `사람 작가 ${index + 1}`,
+      level: getParticipantWriterLevel(room, participant),
       paragraphs: ownTurns.length,
       characters,
       contributionShare: totalCharacters > 0 ? Math.round((characters / totalCharacters) * 100) : 0,
@@ -466,6 +478,7 @@ function buildReportPrompt(room: RoomRow, metrics: HumanMetric[], turns: StoryTu
   return [
     `장르: ${room.genre}`,
     `제목: ${room.story_title}`,
+    buildReportLevelGuidance(metrics.map((metric) => ({ name: metric.promptName, level: metric.level }))),
     "사람 작가 기여 지표(순위가 아니라 참고용):",
     JSON.stringify(
       metrics.map((metric) => ({
