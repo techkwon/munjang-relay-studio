@@ -431,7 +431,7 @@ export function StudentJoin() {
         <div className="student-top-actions">
           <nav className="mode-switcher" aria-label="문장잇기 모드">
             <Link href="/">한 화면</Link>
-            <Link href="/teacher">교사용</Link>
+            <a href="/teacher">교사용</a>
             <Link href="/join" aria-current="page">학생용</Link>
           </nav>
           <ThemeToggle />

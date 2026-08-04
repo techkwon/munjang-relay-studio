@@ -23,6 +23,10 @@ export async function generateMetadata(): Promise<Metadata> {
     description:
       "한 기기에서 쓰거나 교사가 방을 열어 학생과 AI 작가가 함께 이어 쓰는 한국어 릴레이 이야기 활동입니다.",
     applicationName: "문장잇기",
+    icons: {
+      icon: [{ url: "/favicon.svg", type: "image/svg+xml" }],
+      shortcut: "/favicon.svg",
+    },
     openGraph: {
       type: "website",
       locale: "ko_KR",

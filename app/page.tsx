@@ -594,7 +594,7 @@ export default function Home() {
                 사람과 AI 작가를 섞어 한 문단씩 이어 쓰세요.
               </p>
               <div className="hero-mode-links" aria-label="시작 방식 선택">
-                <Link href="/teacher">교사용 방 만들기 <span aria-hidden="true">↗</span></Link>
+                <a href="/teacher">교사용 방 만들기 <span aria-hidden="true">↗</span></a>
                 <Link href="/join">학생용 참여하기 <span aria-hidden="true">→</span></Link>
               </div>
               <button className="mobile-jump" type="button" onClick={revealLocalSetup}>

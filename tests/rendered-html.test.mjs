@@ -108,14 +108,34 @@ test("keeps local finished-story copy and share controls", async () => {
 });
 
 test("requires ChatGPT auth before rendering the teacher page", async () => {
-  const teacherPage = await readProjectFile("app/teacher/page.tsx");
-  const auth = await readProjectFile("app/chatgpt-auth.ts");
+  const [teacherPage, auth, landing, student] = await Promise.all([
+    readProjectFile("app/teacher/page.tsx"),
+    readProjectFile("app/chatgpt-auth.ts"),
+    readProjectFile("app/page.tsx"),
+    readProjectFile("app/join/StudentJoin.tsx"),
+  ]);
 
   assert.match(teacherPage, /requireChatGPTUser\("\/teacher"\)/);
   assert.match(teacherPage, /chatGPTSignOutPath\("\/"\)/);
   assert.match(auth, /oai-authenticated-user-id/);
   assert.match(auth, /oai-authenticated-user-email/);
   assert.match(auth, /\/signin-with-chatgpt/);
+  assert.match(landing, /<a href="\/teacher">교사용 방 만들기/);
+  assert.doesNotMatch(landing, /<Link href="\/teacher">/);
+  assert.match(student, /<a href="\/teacher">교사용<\/a>/);
+  assert.doesNotMatch(student, /<Link href="\/teacher">교사용<\/Link>/);
+});
+
+test("publishes a favicon without a missing asset request", async () => {
+  const [layout, fallbackRoute, favicon] = await Promise.all([
+    readProjectFile("app/layout.tsx"),
+    readProjectFile("app/favicon.ico/route.ts"),
+    readProjectFile("public/favicon.svg"),
+  ]);
+
+  assert.match(layout, /icons:\s*\{[\s\S]*\/favicon\.svg/);
+  assert.match(fallbackRoute, /Response\.redirect\(new URL\("\/favicon\.svg", request\.url\), 308\)/);
+  assert.match(favicon, /<svg[\s\S]*viewBox="0 0 64 64"/);
 });
 
 test("allows anonymous students to find and join rooms", async () => {
@@ -417,7 +437,7 @@ test("applies Retro Digital Y2K styling across local teacher and student routes"
     readProjectFile("app/globals.css"),
   ]);
 
-  assert.match(page, /<Link href="\/teacher">교사용 방 만들기/);
+  assert.match(page, /<a href="\/teacher">교사용 방 만들기/);
   assert.match(page, /<Link href="\/join">학생용 참여하기/);
   assert.match(teacher, /className="retro-shell teacher-shell"/);
   assert.match(student, /className="retro-shell student-shell"/);
