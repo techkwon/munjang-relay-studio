@@ -511,10 +511,8 @@ test("constrains Solar output to preserve student voice and evidence-based feedb
   assert.match(aiRoute, /report\.writers\[index\]/);
 });
 
-test("pins the Sites runtime transition on the independent Node v2 flag", async () => {
+test("keeps the Node compatibility required by Vinext and server-side QR rendering", async () => {
   const viteConfig = await readProjectFile("vite.config.ts");
 
-  assert.match(viteConfig, /compatibility_date: "2026-08-04"/);
-  assert.match(viteConfig, /compatibility_flags: \["nodejs_compat_v2"\]/);
-  assert.doesNotMatch(viteConfig, /compatibility_flags: \["nodejs_compat"\]/);
+  assert.match(viteConfig, /compatibility_flags: \["nodejs_compat"\]/);
 });

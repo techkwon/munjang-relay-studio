@@ -13,11 +13,8 @@ const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
 
 const localBindingConfig = {
   main: "./worker/index.ts",
-  // Sites rejects the legacy nodejs_compat flag at this runtime date but its
-  // provider adapter preserves an old flag when given an empty list. The v2
-  // flag keeps Vinext's Node APIs active while replacing that stale value.
-  compatibility_date: "2026-08-04",
-  compatibility_flags: ["nodejs_compat_v2"],
+  // Vinext and server-side QR rendering import Node runtime modules.
+  compatibility_flags: ["nodejs_compat"],
   d1_databases: d1
     ? [
         {
