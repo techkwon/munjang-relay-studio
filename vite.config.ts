@@ -13,11 +13,11 @@ const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
 
 const localBindingConfig = {
   main: "./worker/index.ts",
-  // Sites enables Node compatibility by default from this runtime date. Keep
-  // the empty flag list explicit so framework detection does not re-inject the
-  // now-redundant nodejs_compat flag during production publication.
+  // Sites rejects the legacy nodejs_compat flag at this runtime date but its
+  // provider adapter preserves an old flag when given an empty list. The v2
+  // flag keeps Vinext's Node APIs active while replacing that stale value.
   compatibility_date: "2026-08-04",
-  compatibility_flags: [],
+  compatibility_flags: ["nodejs_compat_v2"],
   d1_databases: d1
     ? [
         {

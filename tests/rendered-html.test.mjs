@@ -511,10 +511,10 @@ test("constrains Solar output to preserve student voice and evidence-based feedb
   assert.match(aiRoute, /report\.writers\[index\]/);
 });
 
-test("pins the Sites runtime transition without a redundant Node compatibility flag", async () => {
+test("pins the Sites runtime transition on the independent Node v2 flag", async () => {
   const viteConfig = await readProjectFile("vite.config.ts");
 
   assert.match(viteConfig, /compatibility_date: "2026-08-04"/);
-  assert.match(viteConfig, /compatibility_flags: \[\]/);
+  assert.match(viteConfig, /compatibility_flags: \["nodejs_compat_v2"\]/);
   assert.doesNotMatch(viteConfig, /compatibility_flags: \["nodejs_compat"\]/);
 });
