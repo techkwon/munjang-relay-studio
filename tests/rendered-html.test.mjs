@@ -150,8 +150,26 @@ test("allows anonymous students to find and join rooms", async () => {
   assert.match(studentJoin, /fetch\("\/api\/rooms"/);
   assert.match(studentJoin, /action: "join"/);
   assert.match(studentJoin, /나의 수준 · \{meLevelLabel\} 수준/);
+  assert.match(studentJoin, /위험 요소가 있어 AI가 안전한 표현으로 순화해 작품에 반영했습니다\./);
+  assert.match(studentJoin, /누적 경고 \{moderationAlert\.warningCount\}회/);
+  assert.match(studentJoin, /작성 제한 상태입니다\. 교사에게 경고 초기화를 요청해 주세요\./);
+  assert.match(studentJoin, /disabled=\{busy \|\| isWritingRestricted \|\| !draft\.trim\(\)\}/);
   assert.doesNotMatch(studentRoute, /requireChatGPTUser|getChatGPTUser/);
   assert.match(studentRoute, /const action = typeof body\.action === "string" \? body\.action : "join"/);
+});
+
+test("renders teacher moderation controls and warning reset contract", async () => {
+  const teacherDashboard = await readProjectFile("app/teacher/TeacherDashboard.tsx");
+
+  assert.match(teacherDashboard, /moderationSettings/);
+  assert.match(teacherDashboard, /NSFW/);
+  assert.match(teacherDashboard, /혐오/);
+  assert.match(teacherDashboard, /위협/);
+  assert.match(teacherDashboard, /욕설·은어/);
+  assert.match(teacherDashboard, /경고 3회 작성 제한/);
+  assert.match(teacherDashboard, /AI 순화 1차 안전장치·의미가 달라질 수 있음/);
+  assert.match(teacherDashboard, /action: "reset_warnings"/);
+  assert.match(teacherDashboard, /경고 초기화/);
 });
 
 test("keeps local mode turn count at or above writer count", async () => {

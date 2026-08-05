@@ -8,6 +8,12 @@ export type WriterLevel = "elementary" | "middle" | "high";
 export type OrderMode = "sequential" | "random";
 export type SeedSource = "ai" | "fallback";
 export type AsyncStatus = "idle" | "pending" | "running" | "complete" | "failed";
+export type ModerationCategory = "nsfw" | "hate" | "threat" | "slang";
+
+export type ModerationSettings = Record<ModerationCategory, boolean> & {
+  warningLock: boolean;
+  warningLimit: number;
+};
 
 export type D1RunResult = {
   success: boolean;
@@ -40,6 +46,12 @@ export type RoomRow = {
   writer_limit: number;
   human_limit: number;
   ai_limit: number;
+  moderation_nsfw: number | boolean;
+  moderation_hate: number | boolean;
+  moderation_threat: number | boolean;
+  moderation_slang: number | boolean;
+  moderation_warning_lock: number | boolean;
+  moderation_warning_limit: number;
   genre: Genre;
   turn_limit: number;
   turn_seconds: number;
@@ -74,6 +86,9 @@ export type ParticipantRow = {
   ai_role: string | null;
   token_hash: string | null;
   slot_index: number;
+  warning_count: number;
+  last_warning_at: number | null;
+  blocked_at: number | null;
   joined_at: number;
 };
 
@@ -86,6 +101,8 @@ export type StoryTurnRow = {
   writer_type: WriterType;
   status: TurnStatus;
   text: string | null;
+  moderation_categories: string | null;
+  moderation_checked_at: number | null;
   deadline_at: number;
   submitted_at: number | null;
   created_at: number;
@@ -101,6 +118,7 @@ export type NewRoomSettings = {
   turnLimit: number;
   turnSeconds: number;
   orderMode: OrderMode;
+  moderationSettings: ModerationSettings;
 };
 
 const ROOM_CODE_CHARACTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -227,6 +245,7 @@ export function parseRoomSettings(body: Record<string, unknown>): NewRoomSetting
     turnLimit,
     turnSeconds: parseAllowedNumber(body.turnSeconds, TURN_SECONDS, 60),
     orderMode: body.orderMode === "random" ? "random" : "sequential",
+    moderationSettings: parseModerationSettings(body),
   };
 }
 
@@ -256,13 +275,16 @@ export function makeTurnParticipantOrder(participants: ParticipantRow[], orderMo
     .map(({ participant }, slotIndex) => ({ ...participant, slot_index: slotIndex }));
 }
 
-export function safeRoom(room: RoomRow, participants: ParticipantRow[] = [], turns: StoryTurnRow[] = []) {
+export function safeRoom(room: RoomRow, participants: ParticipantRow[] = [], turns: StoryTurnRow[] = [], options: { teacher?: boolean } = {}) {
   const currentTurn = turns.find((turn) => turn.turn_index === room.current_turn_index) ?? null;
   const resolvedOrder = turns
     .slice()
     .sort((a, b) => a.turn_index - b.turn_index)
     .reduce<string[]>((order, turn) => (order.includes(turn.participant_id) ? order : [...order, turn.participant_id]), []);
   const orderPosition = new Map(resolvedOrder.map((participantId, index) => [participantId, index]));
+  const teacherModeration = options.teacher
+    ? { moderationSettings: getRoomModerationSettings(room) }
+    : {};
   return {
     roomCode: room.room_code,
     status: room.status,
@@ -281,6 +303,7 @@ export function safeRoom(room: RoomRow, participants: ParticipantRow[] = [], tur
     storySetup: room.story_setup,
     storyOpener: room.story_opener,
     seedSource: room.seed_source,
+    ...teacherModeration,
     aiGenerationStatus: room.ai_generation_status,
     aiGenerationState: safeJsonParse(room.ai_generation_state),
     writerLevels: getRoomWriterLevels(room),
@@ -292,11 +315,11 @@ export function safeRoom(room: RoomRow, participants: ParticipantRow[] = [], tur
     completedAt: room.completed_at,
     closedAt: room.closed_at,
     participants: participants.map((participant) => ({
-      ...safeParticipant(participant, room),
+      ...safeParticipant(participant, room, { includeModeration: options.teacher === true }),
       orderPosition: orderPosition.get(participant.id) ?? participant.slot_index,
     })),
-    currentTurn: currentTurn ? safeTurn(currentTurn) : null,
-    story: safeStory(room, turns),
+    currentTurn: currentTurn ? safeTurn(currentTurn, { includeModeration: options.teacher === true }) : null,
+    story: safeStory(room, turns, { includeModeration: options.teacher === true }),
   };
 }
 
@@ -313,8 +336,8 @@ export function safeRoomPreview(room: RoomRow, participants: ParticipantRow[] = 
   };
 }
 
-export function safeParticipant(participant: ParticipantRow, room?: RoomRow) {
-  return {
+export function safeParticipant(participant: ParticipantRow, room?: RoomRow, options: { includeModeration?: boolean } = {}) {
+  const safe = {
     id: participant.id,
     writerName: participant.writer_name,
     writerType: participant.writer_type,
@@ -323,9 +346,24 @@ export function safeParticipant(participant: ParticipantRow, room?: RoomRow) {
     slotIndex: participant.slot_index,
     joinedAt: participant.joined_at,
   };
+  if (!options.includeModeration) return safe;
+  return {
+    ...safe,
+    warningCount: participant.warning_count ?? 0,
+    warningLimit: room ? getRoomModerationSettings(room).warningLimit : 3,
+    writingRestricted: participant.blocked_at != null,
+    lastWarningAt: participant.last_warning_at ?? null,
+    blockedAt: participant.blocked_at ?? null,
+  };
 }
 
-export function safeTurn(turn: StoryTurnRow) {
+export function safeTurn(turn: StoryTurnRow, options: { includeModeration?: boolean } = {}) {
+  const moderation = options.includeModeration
+    ? {
+        moderationCategories: parseModerationCategories(turn.moderation_categories),
+        moderationCheckedAt: turn.moderation_checked_at,
+      }
+    : {};
   return {
     turnIndex: turn.turn_index,
     participantId: turn.participant_id,
@@ -333,12 +371,13 @@ export function safeTurn(turn: StoryTurnRow) {
     writerType: turn.writer_type,
     status: turn.status,
     text: turn.status === "submitted" ? turn.text : null,
+    ...moderation,
     deadlineAt: turn.deadline_at,
     submittedAt: turn.submitted_at,
   };
 }
 
-export function safeStory(room: RoomRow, turns: StoryTurnRow[]) {
+export function safeStory(room: RoomRow, turns: StoryTurnRow[], options: { includeModeration?: boolean } = {}) {
   const submittedTurns = turns
     .filter((turn) => turn.status === "submitted" && turn.text)
     .sort((a, b) => a.turn_index - b.turn_index);
@@ -350,6 +389,12 @@ export function safeStory(room: RoomRow, turns: StoryTurnRow[]) {
       writerName: turn.writer_name,
       writerType: turn.writer_type,
       text: turn.text,
+      ...(options.includeModeration
+        ? {
+            moderationCategories: parseModerationCategories(turn.moderation_categories),
+            moderationCheckedAt: turn.moderation_checked_at,
+          }
+        : {}),
       submittedAt: turn.submitted_at,
     })),
     text: [room.story_opener, ...submittedTurns.map((turn) => turn.text)].filter(Boolean).join("\n\n"),
@@ -442,7 +487,19 @@ export async function getParticipantByToken(db: D1Database, roomCode: string, to
 export async function advanceExpiredTurns(db: D1Database, initialRoom: RoomRow, now = Date.now()) {
   let room = initialRoom;
   for (let guard = 0; guard < 20; guard += 1) {
-    if (room.status !== "active" || !room.current_deadline_at || room.current_deadline_at > now) break;
+    if (room.status !== "active") break;
+    const currentTurn = await db
+      .prepare(
+        `SELECT story_turns.status AS status, participants.blocked_at AS blocked_at
+         FROM story_turns
+         LEFT JOIN participants ON participants.id = story_turns.participant_id
+         WHERE story_turns.room_code = ? AND story_turns.turn_index = ?`,
+      )
+      .bind(room.room_code, room.current_turn_index)
+      .first<{ status: TurnStatus; blocked_at: number | null }>();
+    const shouldSkipBlockedTurn = currentTurn?.status === "pending" && currentTurn.blocked_at !== null;
+    const shouldSkipExpiredTurn = Boolean(room.current_deadline_at && room.current_deadline_at <= now);
+    if (!shouldSkipBlockedTurn && !shouldSkipExpiredTurn) break;
 
     const isLastTurn = room.current_turn_index >= room.turn_limit - 1;
     await db.batch([
@@ -601,6 +658,70 @@ export function getRoomWriterLevels(room: Pick<RoomRow, "writer_levels" | "write
 
 export function getParticipantWriterLevel(room: Pick<RoomRow, "writer_levels" | "writer_limit">, participant: Pick<ParticipantRow, "slot_index">) {
   return getRoomWriterLevels(room)[participant.slot_index] ?? "elementary";
+}
+
+export function getRoomModerationSettings(
+  room: Pick<
+    RoomRow,
+    | "moderation_nsfw"
+    | "moderation_hate"
+    | "moderation_threat"
+    | "moderation_slang"
+    | "moderation_warning_lock"
+    | "moderation_warning_limit"
+  >,
+): ModerationSettings {
+  return {
+    nsfw: coerceBoolean(room.moderation_nsfw),
+    hate: coerceBoolean(room.moderation_hate),
+    threat: coerceBoolean(room.moderation_threat),
+    slang: coerceBoolean(room.moderation_slang),
+    warningLock: coerceBoolean(room.moderation_warning_lock),
+    warningLimit: parseWarningLimit(room.moderation_warning_limit),
+  };
+}
+
+function parseModerationSettings(body: Record<string, unknown>): ModerationSettings {
+  const source =
+    body.moderationSettings && typeof body.moderationSettings === "object" && !Array.isArray(body.moderationSettings)
+      ? (body.moderationSettings as Record<string, unknown>)
+      : body;
+  return {
+    nsfw: parseBoolean(source.nsfw, true),
+    hate: parseBoolean(source.hate, true),
+    threat: parseBoolean(source.threat, true),
+    slang: parseBoolean(source.slang, true),
+    warningLock: parseBoolean(source.warningLock, true),
+    warningLimit: parseWarningLimit(source.warningLimit),
+  };
+}
+
+function parseWarningLimit(value: unknown) {
+  const numeric = Number(value ?? 3);
+  if (!Number.isInteger(numeric) || numeric < 2 || numeric > 5) return 3;
+  return numeric;
+}
+
+function parseBoolean(value: unknown, fallback: boolean) {
+  if (value === undefined || value === null) return fallback;
+  return coerceBoolean(value);
+}
+
+function coerceBoolean(value: unknown) {
+  return value === true || value === 1 || value === "1" || value === "true";
+}
+
+function parseModerationCategories(value: string | null): ModerationCategory[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((category): category is ModerationCategory =>
+      category === "nsfw" || category === "hate" || category === "threat" || category === "slang",
+    );
+  } catch {
+    return [];
+  }
 }
 
 function validateWriterComposition(writerTypes: WriterType[]) {

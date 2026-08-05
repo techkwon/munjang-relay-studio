@@ -360,7 +360,7 @@ async function submitAiTurn(db: D1Database, roomCode: string, turn: StoryTurnRow
 
 async function roomResponse(db: D1Database, roomCode: string, message: string) {
   const [room, participants, turns] = await Promise.all([getRoomByCode(db, roomCode), getParticipants(db, roomCode), getStoryTurns(db, roomCode)]);
-  return json({ room: safeRoom(room, participants, turns), message });
+  return json({ room: safeRoom(room, participants, turns, { teacher: true }), message });
 }
 
 async function markAiFailure(db: D1Database, roomCode: string, claim: string, action: string) {

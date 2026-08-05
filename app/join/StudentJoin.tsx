@@ -14,6 +14,8 @@ type Writer = {
   kind: "human" | "ai";
   position: number;
   level: WriterLevel;
+  warningCount?: number;
+  writingRestricted?: boolean;
 };
 
 type Entry = {
@@ -78,6 +80,23 @@ type StudentSession = {
   name: string;
 };
 
+type ModerationResult = {
+  applied?: boolean;
+  aiRewritten?: boolean;
+  categories?: string[];
+  warningCount?: number;
+  warningLimit?: number;
+  writingRestricted?: boolean;
+};
+
+type ModerationAlert = {
+  message: string;
+  categories: string[];
+  warningCount?: number;
+  warningLimit?: number;
+  writingRestricted?: boolean;
+};
+
 function roomStorageKey(code: string) {
   return `munjang-itgi:room:${code}`;
 }
@@ -90,6 +109,13 @@ const LEVEL_LABEL: Record<WriterLevel, string> = {
   elementary: "초등",
   middle: "중등",
   high: "고등",
+};
+
+const MODERATION_CATEGORY_LABEL: Record<string, string> = {
+  nsfw: "NSFW",
+  hate: "혐오",
+  threat: "위협",
+  slang: "욕설·은어",
 };
 
 function normalizeWriterLevel(value: unknown): WriterLevel {
@@ -110,6 +136,18 @@ function getErrorMessage(payload: unknown, fallback: string) {
   return fallback;
 }
 
+function readOptionalNumber(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function normalizeModerationCategories(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => String(item))
+    .filter(Boolean)
+    .map((item) => MODERATION_CATEGORY_LABEL[item] ?? item);
+}
+
 function normalizeRoom(payload: unknown): Room | null {
   if (!payload || typeof payload !== "object") return null;
   const record = payload as Record<string, unknown>;
@@ -119,6 +157,10 @@ function normalizeRoom(payload: unknown): Room | null {
   const roomWriterLevels = Array.isArray(value.writerLevels)
     ? value.writerLevels.map((item) => normalizeWriterLevel(item))
     : Array.from({ length: Number(value.writerLimit ?? 0) }, () => "elementary" as WriterLevel);
+  const privateParticipant = record.participant && typeof record.participant === "object"
+    ? record.participant as Record<string, unknown>
+    : null;
+  const privateParticipantId = String(privateParticipant?.id ?? privateParticipant?.participantId ?? "");
   const rawParticipants = Array.isArray(value.participants) ? value.participants as Array<Record<string, unknown>> : [];
   const participants: Writer[] = rawParticipants.map((writer, index): Writer => ({
     id: String(writer.id ?? `writer-${index}`),
@@ -126,6 +168,8 @@ function normalizeRoom(payload: unknown): Room | null {
     kind: writer.writerType === "ai" || writer.kind === "ai" ? "ai" : "human",
     position: Number(writer.orderPosition ?? writer.slotIndex ?? writer.position ?? index),
     level: readWriterLevel(writer.writerLevel ?? writer.level) ?? roomWriterLevels[Number(writer.slotIndex ?? writer.position ?? index)] ?? "elementary",
+    warningCount: String(writer.id ?? "") === privateParticipantId ? readOptionalNumber(privateParticipant?.warningCount) : undefined,
+    writingRestricted: String(writer.id ?? "") === privateParticipantId ? privateParticipant?.writingRestricted === true : undefined,
   })).sort((a, b) => a.position - b.position);
   const current = value.currentTurn && typeof value.currentTurn === "object"
     ? value.currentTurn as Record<string, unknown>
@@ -197,12 +241,14 @@ export function StudentJoin() {
   const [draft, setDraft] = useState("");
   const [status, setStatus] = useState("");
   const [statusPersistent, setStatusPersistent] = useState(false);
+  const [moderationAlert, setModerationAlert] = useState<ModerationAlert | null>(null);
   const [busy, setBusy] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const draftRef = useRef<HTMLTextAreaElement>(null);
 
   const writers = room?.participants ?? room?.writers ?? [];
   const me = session ? writers.find((writer) => writer.id === session.participantId) : null;
+  const isWritingRestricted = me?.writingRestricted === true;
   const currentWriter = writers.find((writer) => writer.position === room?.currentWriterPosition);
   const isMyTurn = Boolean(
     room?.status === "active" &&
@@ -229,6 +275,25 @@ export function StudentJoin() {
     setStatusPersistent(persistent);
   }, []);
 
+  const showModerationNotice = useCallback((payload: Record<string, unknown>) => {
+    const moderation = payload.moderation && typeof payload.moderation === "object"
+      ? payload.moderation as ModerationResult
+      : null;
+    if (!moderation?.applied && !moderation?.writingRestricted) return;
+    const categories = normalizeModerationCategories(moderation.categories);
+    setModerationAlert({
+      message: moderation.aiRewritten
+        ? "위험 요소가 있어 AI가 안전한 표현으로 순화해 작품에 반영했습니다."
+        : typeof payload.message === "string"
+          ? payload.message
+          : "문장을 제출하지 못했습니다.",
+      categories,
+      warningCount: moderation.warningCount,
+      warningLimit: moderation.warningLimit,
+      writingRestricted: moderation.writingRestricted,
+    });
+  }, []);
+
   const fetchRoom = useCallback(async (
     roomCode: string,
     activeSession?: StudentSession | null,
@@ -249,6 +314,10 @@ export function StudentJoin() {
       const nextRoom = normalizeRoom(payload);
       if (!nextRoom) throw new Error("방 정보를 확인하지 못했습니다.");
       setRoom(nextRoom);
+      const nextMe = activeSession ? (nextRoom.participants ?? nextRoom.writers ?? []).find((writer) => writer.id === activeSession.participantId) : null;
+      if (nextMe?.writingRestricted) {
+        setDraft("");
+      }
       if (!quiet) showStatus(`${nextRoom.code} 방을 찾았습니다.`);
       return nextRoom;
     } catch (error) {
@@ -379,6 +448,10 @@ export function StudentJoin() {
 
   async function submitDraft() {
     const cleanText = draft.trim();
+    if (isWritingRestricted) {
+      showStatus("작성 제한 상태입니다. 교사에게 경고 초기화를 요청해 주세요.", true);
+      return;
+    }
     if (!session || !room || !isMyTurn || !cleanText) {
       showStatus(cleanText ? "현재 차례를 다시 확인해 주세요." : "한 문장 이상 적어 주세요.", true);
       return;
@@ -399,10 +472,12 @@ export function StudentJoin() {
         }),
       });
       const payload = await response.json();
+      const payloadRecord = payload && typeof payload === "object" ? payload as Record<string, unknown> : {};
+      showModerationNotice(payloadRecord);
       if (!response.ok) throw new Error(getErrorMessage(payload, "문단을 제출하지 못했습니다."));
       setDraft("");
       await fetchRoom(code, session, true);
-      showStatus("문단을 붙였습니다. 다음 작가에게 차례가 넘어갔어요.");
+      showStatus(typeof payloadRecord.message === "string" ? payloadRecord.message : "문단을 붙였습니다. 다음 작가에게 차례가 넘어갔어요.");
     } catch (error) {
       showStatus(error instanceof Error ? error.message : "문단을 제출하지 못했습니다.", true);
       await fetchRoom(code, session, true);
@@ -445,6 +520,7 @@ export function StudentJoin() {
           : "기다리는 중"
       : "입장 대기";
   const meLevelLabel = me ? LEVEL_LABEL[me.level] : null;
+  const restrictedNotice = isWritingRestricted ? "작성 제한 상태입니다. 교사에게 경고 초기화를 요청해 주세요." : "";
 
   return (
     <main className="retro-shell student-shell">
@@ -525,6 +601,7 @@ export function StudentJoin() {
               <div>
                 <span className={`status-chip status-${room.status}`}>{activeStageLabel}</span>
                 {meLevelLabel && <span className="student-level-chip">나의 수준 · {meLevelLabel} 수준</span>}
+                {typeof me?.warningCount === "number" && <span className="student-level-chip safety">나의 경고 · {me.warningCount}회</span>}
                 <p className="terminal-kicker">방 {room.code} · {room.orderMode === "random" ? "랜덤 순서" : "차례대로"}</p>
                 <h1 id="room-title">{room.storyTitle || room.title}</h1>
               </div>
@@ -562,6 +639,23 @@ export function StudentJoin() {
               </div>
             </details>
 
+            {moderationAlert && (
+              <div className="student-safety-alert" role="alert" aria-live="assertive" aria-atomic="true">
+                <strong>{moderationAlert.message}</strong>
+                {moderationAlert.categories.length > 0 && <p>분류: {moderationAlert.categories.join(", ")}</p>}
+                {typeof moderationAlert.warningCount === "number" && (
+                  <p>누적 경고 {moderationAlert.warningCount}회{typeof moderationAlert.warningLimit === "number" ? ` / ${moderationAlert.warningLimit}회` : ""}</p>
+                )}
+              </div>
+            )}
+
+            {isWritingRestricted && (
+              <div className="student-restricted-notice" role="alert" aria-live="polite">
+                <strong>작성 제한</strong>
+                <p>{restrictedNotice}</p>
+              </div>
+            )}
+
             {room.status === "lobby" && (
               <div className="retro-window waiting-window">
                 <div className="window-titlebar"><span>입장 대기</span><i aria-hidden="true">● ● ●</i></div>
@@ -596,10 +690,15 @@ export function StudentJoin() {
                       onChange={(event) => setDraft(event.target.value)}
                       maxLength={500}
                       rows={8}
+                      disabled={isWritingRestricted}
+                      aria-describedby="student-draft-help"
                       placeholder="앞 문장을 읽고, 다음 장면을 한 문단으로 이어 보세요."
                     />
-                    <div className="student-draft-meta"><span>내 생각을 자유롭게 써도 좋아요.</span><span>{draft.length} / 500자</span></div>
-                    <button className="retro-primary sticky-submit" type="button" disabled={busy || !draft.trim()} onClick={() => void submitDraft()}>{busy ? "붙이는 중…" : "문단 붙이고 다음 작가에게 →"}</button>
+                    <div id="student-draft-help" className="student-draft-meta">
+                      <span>{isWritingRestricted ? restrictedNotice : "내 생각을 자유롭게 써도 좋아요."}</span>
+                      <span>{draft.length} / 500자</span>
+                    </div>
+                    <button className="retro-primary sticky-submit" type="button" disabled={busy || isWritingRestricted || !draft.trim()} onClick={() => void submitDraft()}>{busy ? "붙이는 중…" : "문단 붙이고 다음 작가에게 →"}</button>
                   </div>
                 </article>
                 <LiveStory room={room} />

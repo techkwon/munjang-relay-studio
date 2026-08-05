@@ -37,7 +37,7 @@ export async function GET(request: Request) {
       const roomCode = normalizeRoomCode(code);
       const room = await advanceExpiredTurns(db, await getOwnedRoom(db, roomCode, user.userId));
       const [participants, turns] = await Promise.all([getParticipants(db, room.room_code), getStoryTurns(db, room.room_code)]);
-      return json({ room: safeRoom(room, participants, turns) });
+      return json({ room: safeRoom(room, participants, turns, { teacher: true }) });
     }
 
     const { results } = await db
@@ -51,7 +51,7 @@ export async function GET(request: Request) {
           getParticipants(db, advancedRoom.room_code),
           getStoryTurns(db, advancedRoom.room_code),
         ]);
-        return safeRoom(advancedRoom, participants, turns);
+        return safeRoom(advancedRoom, participants, turns, { teacher: true });
       }),
     );
     return json({ rooms });
@@ -97,9 +97,10 @@ export async function POST(request: Request) {
           `INSERT INTO rooms (
             room_code, owner_user_id, owner_email, status, writer_limit, human_limit, ai_limit,
             genre, turn_limit, turn_seconds, order_mode, current_turn_index, current_deadline_at,
-            writer_levels, seed_index, event_index, story_title, story_setup, story_opener, seed_source,
+            writer_levels, moderation_nsfw, moderation_hate, moderation_threat, moderation_slang,
+            moderation_warning_lock, moderation_warning_limit, seed_index, event_index, story_title, story_setup, story_opener, seed_source,
             ai_generation_status, analysis_status, created_at, updated_at
-          ) VALUES (?, ?, ?, 'lobby', ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?, 'fallback', 'idle', 'idle', ?, ?)`,
+          ) VALUES (?, ?, ?, 'lobby', ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'fallback', 'idle', 'idle', ?, ?)`,
         )
         .bind(
           roomCode,
@@ -113,6 +114,12 @@ export async function POST(request: Request) {
           settings.turnSeconds,
           settings.orderMode,
           JSON.stringify(settings.writerLevels),
+          settings.moderationSettings.nsfw ? 1 : 0,
+          settings.moderationSettings.hate ? 1 : 0,
+          settings.moderationSettings.threat ? 1 : 0,
+          settings.moderationSettings.slang ? 1 : 0,
+          settings.moderationSettings.warningLock ? 1 : 0,
+          settings.moderationSettings.warningLimit,
           seedIndex,
           eventIndex,
           seed.title,
@@ -141,7 +148,7 @@ export async function POST(request: Request) {
 
     const room = await getRoomByCode(db, roomCode);
     const participants = await getParticipants(db, roomCode);
-    return json({ room: safeRoom(room, participants), message: "방이 만들어졌어요." }, { status: 201 });
+    return json({ room: safeRoom(room, participants, [], { teacher: true }), message: "방이 만들어졌어요." }, { status: 201 });
   } catch (error) {
     return errorResponse(error);
   }
@@ -161,6 +168,9 @@ export async function PATCH(request: Request) {
     }
     if (action === "close") {
       return await closeRoom(db, room);
+    }
+    if (action === "reset_warnings") {
+      return await resetWarnings(db, room, body.participantId);
     }
     throw new ApiError("지원하지 않는 방 제어 요청이에요.", 400);
   } catch (error) {
@@ -232,7 +242,7 @@ async function startRoom(db: D1Database, room: RoomRow) {
     getParticipants(db, room.room_code),
     getStoryTurns(db, room.room_code),
   ]);
-  return json({ room: safeRoom(nextRoom, participantsAfter, turns), message: "활동이 시작되었어요." });
+  return json({ room: safeRoom(nextRoom, participantsAfter, turns, { teacher: true }), message: "활동이 시작되었어요." });
 }
 
 async function closeRoom(db: D1Database, room: RoomRow) {
@@ -248,5 +258,24 @@ async function closeRoom(db: D1Database, room: RoomRow) {
     getParticipants(db, room.room_code),
     getStoryTurns(db, room.room_code),
   ]);
-  return json({ room: safeRoom(nextRoom, participants, turns), message: "활동이 마감되었어요." });
+  return json({ room: safeRoom(nextRoom, participants, turns, { teacher: true }), message: "활동이 마감되었어요." });
+}
+
+async function resetWarnings(db: D1Database, room: RoomRow, participantId: unknown) {
+  if (typeof participantId !== "string" || !participantId) {
+    throw new ApiError("경고를 초기화할 참여자를 선택해 주세요.", 400);
+  }
+  const now = Date.now();
+  const result = await db
+    .prepare("UPDATE participants SET warning_count = 0, last_warning_at = NULL, blocked_at = NULL WHERE room_code = ? AND id = ? AND writer_type = 'human'")
+    .bind(room.room_code, participantId)
+    .run();
+  if (result.meta?.changes !== 1) throw new ApiError("참여자를 찾을 수 없어요.", 404);
+
+  const advancedRoom = await advanceExpiredTurns(db, await getRoomByCode(db, room.room_code), now);
+  const [participants, turns] = await Promise.all([
+    getParticipants(db, room.room_code),
+    getStoryTurns(db, room.room_code),
+  ]);
+  return json({ room: safeRoom(advancedRoom, participants, turns, { teacher: true }), message: "경고와 차단을 초기화했어요." });
 }

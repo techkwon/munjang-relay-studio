@@ -19,6 +19,8 @@ type RoomWriter = {
   kind: WriterKind;
   position: number;
   level: WriterLevel;
+  warningCount?: number;
+  writingRestricted?: boolean;
 };
 
 type RoomEntry = {
@@ -58,6 +60,32 @@ type Room = {
   participantCount?: number;
   createdAt?: number;
 };
+
+type ModerationSettings = {
+  nsfw: boolean;
+  hate: boolean;
+  threat: boolean;
+  slang: boolean;
+  warningLock: boolean;
+  warningLimit: number;
+};
+
+const DEFAULT_MODERATION_SETTINGS: ModerationSettings = {
+  nsfw: true,
+  hate: true,
+  threat: true,
+  slang: true,
+  warningLock: true,
+  warningLimit: 3,
+};
+
+const MODERATION_OPTIONS: Array<{ key: keyof Omit<ModerationSettings, "warningLimit">; label: string }> = [
+  { key: "nsfw", label: "NSFW" },
+  { key: "hate", label: "혐오" },
+  { key: "threat", label: "위협" },
+  { key: "slang", label: "욕설·은어" },
+  { key: "warningLock", label: "경고 3회 작성 제한" },
+];
 
 const GENRES = [
   ["all", "랜덤"],
@@ -118,6 +146,8 @@ function normalizeRoom(payload: unknown): Room | null {
     kind: writer.writerType === "ai" || writer.kind === "ai" ? "ai" : "human",
     position: Number(writer.orderPosition ?? writer.slotIndex ?? writer.position ?? index),
     level: normalizeWriterLevel(writer.writerLevel ?? writer.level ?? roomWriterLevels?.[Number(writer.slotIndex ?? writer.position ?? index)]),
+    warningCount: typeof writer.warningCount === "number" ? writer.warningCount : undefined,
+    writingRestricted: writer.writingRestricted === true,
   })).sort((a, b) => a.position - b.position);
   const current = value.currentTurn && typeof value.currentTurn === "object"
     ? value.currentTurn as Record<string, unknown>
@@ -261,6 +291,7 @@ export function TeacherDashboard({
   const [selectedRoom, setSelectedRoom] = useState<Room | null>(null);
   const [writerTypes, setWriterTypes] = useState<WriterKind[]>(["human", "human", "human", "ai"]);
   const [writerLevels, setWriterLevels] = useState<WriterLevel[]>(["elementary", "elementary", "elementary", "elementary"]);
+  const [moderationSettings, setModerationSettings] = useState<ModerationSettings>(DEFAULT_MODERATION_SETTINGS);
   const [genre, setGenre] = useState("all");
   const [turnLimit, setTurnLimit] = useState(8);
   const [turnSeconds, setTurnSeconds] = useState(60);
@@ -567,6 +598,10 @@ export function TeacherDashboard({
     });
   }
 
+  function setModerationOption(key: keyof Omit<ModerationSettings, "warningLimit">, checked: boolean) {
+    setModerationSettings((current) => ({ ...current, [key]: checked }));
+  }
+
   async function createRoom(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!canCreateRoom) {
@@ -585,6 +620,7 @@ export function TeacherDashboard({
           writerLimit: totalWriters,
           writerTypes: activeWriterTypes,
           writerLevels: formWriterLevels,
+          moderationSettings,
           genre,
           turnLimit,
           turnSeconds,
@@ -630,6 +666,29 @@ export function TeacherDashboard({
       setStatus(action === "start" ? "활동이 시작되었습니다." : "활동을 마감했습니다.");
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "방 상태를 바꾸지 못했습니다.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function resetWarnings(participantId: string) {
+    if (!selectedRoom) return;
+    setBusy(true);
+    setStatus("경고 기록을 초기화하고 있습니다.");
+    try {
+      const response = await fetch("/api/teacher/rooms", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ roomCode: selectedRoom.code, action: "reset_warnings", participantId }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(getErrorMessage(payload, "경고를 초기화하지 못했습니다."));
+      const room = normalizeRoom(payload);
+      if (room) setSelectedRoom(room);
+      await loadRooms(true);
+      setStatus("경고를 초기화했습니다.");
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "경고를 초기화하지 못했습니다.");
     } finally {
       setBusy(false);
     }
@@ -765,6 +824,24 @@ export function TeacherDashboard({
 
             <div className="writer-level-summary" aria-label={`참가자 수준 요약 ${levelSummary}`}>{levelSummary}</div>
             <p className="writer-seat-note">사람 좌석이 여러 수준이면 학생은 입장 순서대로 비어 있는 사람 좌석에 배정됩니다.</p>
+
+            <fieldset className="moderation-settings" aria-describedby="moderation-helper">
+              <legend>학생 문장 안전 필터</legend>
+              <div className="moderation-switch-grid">
+                {MODERATION_OPTIONS.map((option) => (
+                  <label className="moderation-switch" key={option.key}>
+                    <input
+                      type="checkbox"
+                      checked={moderationSettings[option.key]}
+                      onChange={(event) => setModerationOption(option.key, event.target.checked)}
+                    />
+                    <span aria-hidden="true" />
+                    <strong>{option.label}</strong>
+                  </label>
+                ))}
+              </div>
+              <p id="moderation-helper">AI 순화 1차 안전장치·의미가 달라질 수 있음</p>
+            </fieldset>
 
             <p className={`writer-total ${!canCreateRoom ? "is-error" : ""}`}>
               TOTAL · {totalWriters}명 · HUMAN {humanWriterCount} · AI {aiWriterCount}
@@ -948,6 +1025,20 @@ export function TeacherDashboard({
                             <span>{slot.position + 1}</span>
                             <strong>{slot.writer.name ?? slot.writer.displayName}</strong>
                             <small>{slot.writer.kind === "ai" ? `AI · ${LEVEL_LABEL[slot.writer.level]}` : `학생 · ${LEVEL_LABEL[slot.writer.level]}`}</small>
+                            {slot.writer.kind === "human" && (
+                              <div className="writer-safety-row" aria-label={`${slot.writer.name} 안전 상태`}>
+                                <em>경고 {slot.writer.warningCount ?? 0}회</em>
+                                {slot.writer.writingRestricted && <em className="is-restricted">작성 제한</em>}
+                                <button
+                                  type="button"
+                                  disabled={busy || (slot.writer.warningCount ?? 0) === 0}
+                                  onClick={() => void resetWarnings(slot.writer.id)}
+                                  aria-label={`${slot.writer.name} 경고 초기화`}
+                                >
+                                  경고 초기화
+                                </button>
+                              </div>
+                            )}
                           </div>
                         ) : (
                           <div className="writer-slot empty" key={`empty-${slot.position}`}>

@@ -3150,6 +3150,45 @@ html[data-theme="light"] .timer strong {
   font-size: 0.5rem;
 }
 
+.writer-safety-row {
+  display: grid;
+  gap: 0.28rem;
+  margin-top: 0.38rem;
+}
+
+.writer-safety-row em {
+  background: #fff5c7;
+  border: 1px solid var(--y2k-ink);
+  border-radius: 4px;
+  color: var(--y2k-ink);
+  font-size: 0.58rem;
+  font-style: normal;
+  font-weight: 950;
+  padding: 0.12rem 0.26rem;
+  width: fit-content;
+}
+
+.writer-safety-row em.is-restricted {
+  background: var(--y2k-red);
+  color: #ffffff;
+}
+
+.writer-safety-row button {
+  background: #ffffff;
+  border: 2px solid var(--y2k-ink);
+  border-radius: 4px;
+  color: var(--y2k-ink);
+  font-size: 0.62rem;
+  font-weight: 950;
+  min-height: 44px;
+  padding: 0.28rem 0.38rem;
+}
+
+.writer-safety-row button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .writer-slot.ai { background: #efe1ff; }
 .writer-slot.empty { border-style: dashed; opacity: 0.65; }
 .writer-slot.is-current { background: var(--y2k-lime); box-shadow: 3px 3px 0 var(--y2k-cyan); }
@@ -3544,6 +3583,47 @@ html[data-theme="light"] .timer strong {
   margin-top: 0.45rem;
   min-height: 260px;
   resize: vertical;
+}
+
+.student-writing-body textarea:disabled {
+  background: #e6eaf7;
+  color: #52617d;
+  cursor: not-allowed;
+}
+
+.student-safety-alert,
+.student-restricted-notice {
+  border: 2px solid var(--y2k-ink);
+  border-radius: 6px;
+  color: var(--y2k-ink);
+  display: grid;
+  gap: 0.25rem;
+  margin: 0 0 1rem;
+  padding: 0.7rem 0.85rem;
+}
+
+.student-safety-alert {
+  background: #fff5c7;
+  box-shadow: 4px 4px 0 var(--y2k-pink);
+}
+
+.student-restricted-notice {
+  background: #ffe4ec;
+  box-shadow: 4px 4px 0 var(--y2k-red);
+}
+
+.student-safety-alert strong,
+.student-restricted-notice strong {
+  font-family: var(--font-display);
+  font-size: 0.78rem;
+  font-weight: 950;
+}
+
+.student-safety-alert p,
+.student-restricted-notice p {
+  font-size: 0.78rem;
+  font-weight: 850;
+  margin: 0;
 }
 
 .student-draft-meta {
@@ -4070,6 +4150,102 @@ html[data-theme="light"] .timer strong {
   padding: 0.5rem 0.65rem;
 }
 
+.moderation-settings {
+  background: #f7fbff;
+  border: 2px solid var(--y2k-ink);
+  border-radius: 6px;
+  color: var(--y2k-ink);
+  display: grid;
+  gap: 0.65rem;
+  margin: 0;
+  padding: 0.78rem;
+}
+
+.moderation-settings legend {
+  background: var(--y2k-lime);
+  border: 2px solid var(--y2k-ink);
+  border-radius: 4px;
+  font-family: var(--font-display);
+  font-size: 0.62rem;
+  font-weight: 950;
+  padding: 0.18rem 0.48rem;
+}
+
+.moderation-switch-grid {
+  display: grid;
+  gap: 0.5rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.moderation-switch {
+  align-items: center;
+  background: #ffffff;
+  border: 2px solid #8092d8;
+  border-radius: 5px;
+  color: var(--y2k-ink);
+  cursor: pointer;
+  display: grid;
+  gap: 0.48rem;
+  grid-template-columns: 42px minmax(0, 1fr);
+  min-height: 44px;
+  padding: 0.42rem 0.5rem;
+  position: relative;
+}
+
+.moderation-switch input {
+  opacity: 0;
+  position: absolute;
+}
+
+.moderation-switch > span {
+  background: #c3c8da;
+  border: 2px solid var(--y2k-ink);
+  border-radius: 999px;
+  height: 24px;
+  position: relative;
+  width: 42px;
+}
+
+.moderation-switch > span::after {
+  background: #ffffff;
+  border: 2px solid var(--y2k-ink);
+  border-radius: 50%;
+  content: "";
+  height: 18px;
+  left: 1px;
+  position: absolute;
+  top: 1px;
+  transition: transform 140ms ease;
+  width: 18px;
+}
+
+.moderation-switch input:checked + span {
+  background: var(--y2k-lime);
+}
+
+.moderation-switch input:checked + span::after {
+  transform: translateX(18px);
+}
+
+.moderation-switch input:focus-visible + span {
+  outline: 3px solid var(--y2k-blue);
+  outline-offset: 3px;
+}
+
+.moderation-switch strong {
+  font-size: 0.74rem;
+  font-weight: 950;
+  line-height: 1.2;
+  word-break: keep-all;
+}
+
+.moderation-settings p {
+  color: #26396f;
+  font-size: 0.7rem;
+  font-weight: 850;
+  margin: 0;
+}
+
 .teacher-next-action {
   background: #f6f9ff;
   border-color: var(--y2k-ink);
@@ -4141,6 +4317,10 @@ html[data-theme="light"] .timer strong {
   padding: 0.28rem 0.55rem;
 }
 
+.student-level-chip.safety {
+  background: #fff5c7;
+}
+
 .student-gate,
 .student-writing-window,
 .waiting-window,
@@ -4189,6 +4369,8 @@ html[data-theme="light"] .teacher-account a {
   .writer-seat-list {
     display: flex;
     flex-direction: column;
+    max-height: none;
+    overflow-y: visible;
   }
 
   .writer-seat-row {
@@ -4236,5 +4418,9 @@ html[data-theme="light"] .teacher-account a {
 
   .writer-level-summary {
     width: 100%;
+  }
+
+  .moderation-switch-grid {
+    grid-template-columns: 1fr;
   }
 }
