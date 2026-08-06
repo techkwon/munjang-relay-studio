@@ -1,0 +1,24 @@
+{
+  "name": "문장잇기 — AI 릴레이 이야기",
+  "short_name": "문장잇기",
+  "description": "학생과 AI 작가가 함께 이어 쓰는 한국어 릴레이 이야기 활동",
+  "lang": "ko-KR",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#080b18",
+  "theme_color": "#080b18",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

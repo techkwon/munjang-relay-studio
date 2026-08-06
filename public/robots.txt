@@ -1,0 +1,6 @@
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /teacher
+
+Sitemap: https://munjang-relay-studio.techkwon.chatgpt.site/sitemap.xml

@@ -127,15 +127,17 @@ test("requires ChatGPT auth before rendering the teacher page", async () => {
 });
 
 test("publishes a favicon without a missing asset request", async () => {
-  const [layout, fallbackRoute, favicon] = await Promise.all([
+  const [layout, favicon] = await Promise.all([
     readProjectFile("app/layout.tsx"),
-    readProjectFile("app/favicon.ico/route.ts"),
     readProjectFile("public/favicon.svg"),
   ]);
 
+  assert.match(layout, /\/favicon\.ico/);
   assert.match(layout, /icons:\s*\{[\s\S]*\/favicon\.svg/);
-  assert.match(fallbackRoute, /Response\.redirect\(new URL\("\/favicon\.svg", request\.url\), 308\)/);
+  assert.match(layout, /\/apple-touch-icon\.png/);
   assert.match(favicon, /<svg[\s\S]*viewBox="0 0 64 64"/);
+  await assert.doesNotReject(access(new URL("../public/favicon.ico", import.meta.url)));
+  await assert.rejects(access(new URL("../app/favicon.ico/route.ts", import.meta.url)));
 });
 
 test("allows anonymous students to find and join rooms", async () => {

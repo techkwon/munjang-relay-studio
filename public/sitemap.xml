@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">
+  <url>
+    <loc>https://munjang-relay-studio.techkwon.chatgpt.site/</loc>
+    <changefreq>weekly</changefreq>
+    <priority>1.0</priority>
+    <image:image>
+      <image:loc>https://munjang-relay-studio.techkwon.chatgpt.site/og.png</image:loc>
+      <image:title>문장잇기 릴레이 이야기</image:title>
+      <image:caption>한 사람이 쓰고, 다음 사람이 상상하는 릴레이 이야기 활동</image:caption>
+    </image:image>
+  </url>
+</urlset>
