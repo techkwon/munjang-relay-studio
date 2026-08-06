@@ -525,6 +525,15 @@ test("keeps the landing decision focused and reveals standalone setup intentiona
   assert.doesNotMatch(page, /className="paper-stack"/);
 });
 
+test("centers both landing headline lines on the same axis", async () => {
+  const css = await readProjectFile("app/globals.css");
+
+  assert.match(
+    css,
+    /\.setup-view\.is-choice-only \.hero-copy h1 span \{[\s\S]*?margin-left:\s*auto;[\s\S]*?margin-right:\s*auto;[\s\S]*?\}/,
+  );
+});
+
 test("provides persistent readable light and dark modes across all routes", async () => {
   const [layout, toggle, page, teacher, student, css] = await Promise.all([
     readProjectFile("app/layout.tsx"),

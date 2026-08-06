@@ -1749,6 +1749,11 @@ html[data-theme="light"] .theme-toggle > span {
   margin-right: auto;
 }
 
+.setup-view.is-choice-only .hero-copy h1 span {
+  margin-left: auto;
+  margin-right: auto;
+}
+
 .setup-view.is-choice-only .hero-mode-links {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
