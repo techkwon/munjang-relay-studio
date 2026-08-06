@@ -1,7 +1,3 @@
-ALTER TABLE `rooms` ADD `reference_note` text;--> statement-breakpoint
-ALTER TABLE `rooms` ADD `material_kind` text;--> statement-breakpoint
-ALTER TABLE `rooms` ADD `material_name` text;--> statement-breakpoint
-ALTER TABLE `rooms` ADD `material_mime` text;--> statement-breakpoint
-ALTER TABLE `rooms` ADD `material_size` integer;--> statement-breakpoint
-ALTER TABLE `rooms` ADD `material_key` text;--> statement-breakpoint
-ALTER TABLE `rooms` ADD `material_note` text;
+-- Sites D1 already received these additive columns during the pre-release schema provision.
+-- Fresh databases receive them from 0000; this marker keeps the deployed migration id stable.
+SELECT 1;
