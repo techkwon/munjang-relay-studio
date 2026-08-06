@@ -305,6 +305,24 @@ test("student material loading reads authenticated binary responses as blobs", a
   assert.match(materialRoute, /room\.seed_source !== "reference"/);
 });
 
+test("inactive reference files stay reusable for teachers but are hidden from students", async () => {
+  const { safeRoom } = await loadLiveStory();
+  const hiddenMaterialRoom = room({
+    status: "lobby",
+    seed_source: "manual",
+    material_kind: "image",
+    material_name: "old-reference.png",
+    material_mime: "image/png",
+    material_size: 128,
+    material_key: "rooms/teacher/ROOM42/material.png",
+    material_note: "이전 참고 자료",
+  });
+  const writer = participant("pt_a", "가람", 0);
+
+  assert.equal(safeRoom(hiddenMaterialRoom, [writer], [], { participantId: writer.id }).material, null);
+  assert.equal(safeRoom(hiddenMaterialRoom, [writer], [], { teacher: true }).material.name, "old-reference.png");
+});
+
 test("teacher room creation keeps the documented twenty simultaneous open-room limit", async () => {
   const route = await readProjectFile("app/api/teacher/rooms/route.ts");
 

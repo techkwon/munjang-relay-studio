@@ -334,7 +334,10 @@ export function safeRoom(
   const teacherModeration = options.teacher
     ? { moderationSettings: getRoomModerationSettings(room) }
     : {};
-  const material = safeMaterial(room, { includeAvailabilityOnly: !options.teacher && !options.participantId });
+  const material = safeMaterial(room, {
+    includeAvailabilityOnly: !options.teacher && !options.participantId,
+    includeInactive: options.teacher === true,
+  });
   return {
     roomCode: room.room_code,
     status: room.status,
@@ -819,7 +822,8 @@ function parseModerationCategories(value: string | null): ModerationCategory[] {
   }
 }
 
-function safeMaterial(room: RoomRow, options: { includeAvailabilityOnly?: boolean } = {}) {
+function safeMaterial(room: RoomRow, options: { includeAvailabilityOnly?: boolean; includeInactive?: boolean } = {}) {
+  if (room.seed_source !== "reference" && !options.includeInactive) return null;
   if (!room.material_kind || !room.material_name || !room.material_mime || !room.material_size) return null;
   const base = {
     kind: room.material_kind,
