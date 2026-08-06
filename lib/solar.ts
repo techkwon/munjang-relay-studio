@@ -16,6 +16,7 @@ type SolarJsonOptions = {
 
 type SolarPayload = {
   choices?: Array<{
+    finish_reason?: unknown;
     message?: {
       content?: unknown;
       parsed?: unknown;
@@ -54,11 +55,25 @@ async function requestSolarJson<T>(apiKey: string, model: string, options: Solar
       const bodyText = await sendSolarRequest(apiKey, model, options, false);
       return parseSolarResponse<T>(bodyText);
     }
+    if (error instanceof SolarResponseLengthError) {
+      const bodyText = await sendSolarRequest(apiKey, model, options, true, 2);
+      return parseSolarResponse<T>(bodyText);
+    }
+    if (error instanceof SolarResponseFormatError) {
+      const bodyText = await sendSolarRequest(apiKey, model, options, true);
+      return parseSolarResponse<T>(bodyText);
+    }
     throw error;
   }
 }
 
-async function sendSolarRequest(apiKey: string, model: string, options: SolarJsonOptions, includeResponseFormat: boolean) {
+async function sendSolarRequest(
+  apiKey: string,
+  model: string,
+  options: SolarJsonOptions,
+  includeResponseFormat: boolean,
+  tokenMultiplier = 1,
+) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
@@ -75,8 +90,8 @@ async function sendSolarRequest(apiKey: string, model: string, options: SolarJso
         model,
         messages: withSchemaPrompt(options),
         temperature: options.temperature ?? 0.4,
-        max_tokens: completionTokenBudget(model, options),
-        ...(isSolarPro4(model) ? { reasoning_effort: "low" } : {}),
+        max_tokens: completionTokenBudget(model, options) * tokenMultiplier,
+        ...(isSolarPro4(model) ? { reasoning_effort: "none" } : {}),
         stream: false,
         ...(includeResponseFormat
           ? {
@@ -112,7 +127,11 @@ async function sendSolarRequest(apiKey: string, model: string, options: SolarJso
 
 function parseSolarResponse<T>(bodyText: string): T {
   const payload = safeJsonParse<SolarPayload>(bodyText);
-  const message = payload?.choices?.[0]?.message;
+  const choice = payload?.choices?.[0];
+  if (choice?.finish_reason === "length") {
+    throw new SolarResponseLengthError();
+  }
+  const message = choice?.message;
 
   const parsedMessage = asJsonObject(message?.parsed);
   if (parsedMessage) return parsedMessage as T;
@@ -127,7 +146,7 @@ function parseSolarResponse<T>(bodyText: string): T {
     if (parsed) return parsed as T;
   }
 
-  throw new ApiError("AI 응답 형식이 올바르지 않아요. 다시 시도해 주세요.", 502);
+  throw new SolarResponseFormatError();
 }
 
 class SolarHttpError extends Error {
@@ -136,6 +155,18 @@ class SolarHttpError extends Error {
     public readonly bodyText: string,
   ) {
     super(`Upstage request failed with ${status}`);
+  }
+}
+
+class SolarResponseFormatError extends ApiError {
+  constructor() {
+    super("AI 응답 형식이 올바르지 않아요. 다시 시도해 주세요.", 502);
+  }
+}
+
+class SolarResponseLengthError extends ApiError {
+  constructor() {
+    super("AI 응답 길이가 제한을 넘었어요. 더 넉넉한 분량으로 다시 시도해 주세요.", 502);
   }
 }
 

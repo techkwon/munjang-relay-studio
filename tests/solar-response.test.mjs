@@ -55,8 +55,11 @@ async function generateSeedFromPayload(payload, onRequest = () => {}) {
   globalThis.fetch = async (_url, init) => {
     const requestBody = JSON.parse(String(init.body));
     assert.equal(requestBody.model, "solar-pro4");
+    assert.equal(requestBody.reasoning_effort, "none");
     assert.equal(requestBody.response_format.type, "json_schema");
     assert.equal(requestBody.response_format.json_schema.name, "story_seed");
+    assert.equal(requestBody.response_format.json_schema.strict, true);
+    assert.deepEqual(requestBody.response_format.json_schema.schema, seedSchema);
     assert.match(requestBody.messages[0].content, /Return only one JSON object named story_seed/);
     assert.match(requestBody.messages[0].content, /"required":\["title","setup","opener"\]/);
     onRequest(requestBody);
@@ -222,4 +225,64 @@ test("parses the first text block when Upstage message content is an array", asy
   ]);
 
   assert.deepEqual(seed, expectedSeed);
+});
+
+test("retries a length-limited Solar Pro 4 response with reasoning off, the same schema, and more tokens", async () => {
+  const { generateSolarJson } = await loadSolar();
+  const originalFetch = globalThis.fetch;
+  const originalApiKey = process.env.UPSTAGE_API_KEY;
+  const originalModel = process.env.UPSTAGE_MODEL;
+  const requests = [];
+
+  process.env.UPSTAGE_API_KEY = "test-upstage-key";
+  process.env.UPSTAGE_MODEL = "solar-pro4";
+  globalThis.fetch = async (_url, init) => {
+    const requestBody = JSON.parse(String(init.body));
+    requests.push(requestBody);
+
+    assert.equal(requestBody.model, "solar-pro4");
+    assert.equal(requestBody.reasoning_effort, "none");
+    assert.equal(requestBody.response_format.type, "json_schema");
+    assert.equal(requestBody.response_format.json_schema.name, "story_seed");
+    assert.equal(requestBody.response_format.json_schema.strict, true);
+    assert.deepEqual(requestBody.response_format.json_schema.schema, seedSchema);
+
+    if (requests.length === 1) {
+      return new Response(
+        JSON.stringify({
+          choices: [{ finish_reason: "length", message: { content: JSON.stringify(expectedSeed) } }],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+
+    assert.ok(requestBody.max_tokens > requests[0].max_tokens);
+    return new Response(
+      JSON.stringify({
+        choices: [{ finish_reason: "stop", message: { content: JSON.stringify(expectedSeed) } }],
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  };
+
+  try {
+    const seed = await generateSolarJson({
+      schemaName: "story_seed",
+      schema: seedSchema,
+      messages: [
+        { role: "system", content: "JSON only." },
+        { role: "user", content: "첫 문장을 만들어 줘." },
+      ],
+    });
+
+    assert.deepEqual(seed, expectedSeed);
+    assert.equal(requests.length, 2);
+    assert.deepEqual(requests.map((request) => request.model), ["solar-pro4", "solar-pro4"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalApiKey === undefined) delete process.env.UPSTAGE_API_KEY;
+    else process.env.UPSTAGE_API_KEY = originalApiKey;
+    if (originalModel === undefined) delete process.env.UPSTAGE_MODEL;
+    else process.env.UPSTAGE_MODEL = originalModel;
+  }
 });
