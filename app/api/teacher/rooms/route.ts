@@ -8,6 +8,7 @@ import {
   getDb,
   getParticipants,
   getRoomByCode,
+  getRoomWriterLevels,
   getStoryTurns,
   json,
   makeAiParticipants,
@@ -22,6 +23,7 @@ import {
   safeRoom,
   type ParticipantRow,
   type RoomRow,
+  type WriterType,
 } from "@/lib/live-story";
 
 export const dynamic = "force-dynamic";
@@ -88,7 +90,11 @@ export async function POST(request: Request) {
 
     const seedIndex = makeSeedIndex(roomCode, settings.genre);
     const eventIndex = makeEventIndex(roomCode, settings.genre);
-    const seed = createFallbackSeed(settings.genre, seedIndex);
+    const fallbackSeed = createFallbackSeed(settings.genre, seedIndex);
+    const seed = settings.seed.source === "manual" || settings.seed.source === "reference" ? settings.seed : fallbackSeed;
+    const seedSource = settings.seed.source === "manual" || settings.seed.source === "reference" || settings.seed.source === "ai"
+      ? settings.seed.source
+      : "fallback";
     const aiParticipants = makeAiParticipants(roomCode, settings.writerTypes, now, settings.writerLevels);
 
     await db.batch([
@@ -128,6 +134,9 @@ export async function POST(request: Request) {
           now,
           now,
         ),
+      db
+        .prepare("UPDATE rooms SET seed_source = ?, reference_note = ?, updated_at = ? WHERE room_code = ?")
+        .bind(seedSource, settings.seed.referenceNote, now, roomCode),
       ...aiParticipants.map((participant) =>
         db
           .prepare(
@@ -168,6 +177,9 @@ export async function PATCH(request: Request) {
     }
     if (action === "close") {
       return await closeRoom(db, room);
+    }
+    if (action === "update_settings") {
+      return await updateSettings(db, room, body);
     }
     if (action === "reset_warnings") {
       return await resetWarnings(db, room, body.participantId);
@@ -259,6 +271,149 @@ async function closeRoom(db: D1Database, room: RoomRow) {
     getStoryTurns(db, room.room_code),
   ]);
   return json({ room: safeRoom(nextRoom, participants, turns, { teacher: true }), message: "활동이 마감되었어요." });
+}
+
+async function updateSettings(db: D1Database, room: RoomRow, body: Record<string, unknown>) {
+  if (room.status !== "lobby") throw new ApiError("활동 시작 전 대기 중인 방만 설정을 바꿀 수 있어요.", 409);
+
+  const participants = await getParticipants(db, room.room_code);
+  const humanCount = participants.filter((participant) => participant.writer_type === "human").length;
+  const currentWriterTypes = getConfiguredWriterTypes(room, participants);
+  const settings = parseRoomSettings({
+    ...body,
+    writerTypes: body.writerTypes ?? currentWriterTypes,
+    writerLevels: body.writerLevels ?? getRoomWriterLevels(room),
+    genre: body.genre ?? room.genre,
+    turnLimit: body.turnLimit ?? room.turn_limit,
+    turnSeconds: body.turnSeconds ?? room.turn_seconds,
+    orderMode: body.orderMode ?? room.order_mode,
+    moderationSettings: body.moderationSettings ?? {
+      nsfw: room.moderation_nsfw,
+      hate: room.moderation_hate,
+      threat: room.moderation_threat,
+      slang: room.moderation_slang,
+      warningLock: room.moderation_warning_lock,
+      warningLimit: room.moderation_warning_limit,
+    },
+  });
+  const nextWriterTypes = settings.writerTypes;
+  const currentWriterLevels = JSON.stringify(getRoomWriterLevels(room));
+  const nextWriterLevels = JSON.stringify(settings.writerLevels);
+
+  if (humanCount > 0) {
+    if (JSON.stringify(nextWriterTypes) !== JSON.stringify(currentWriterTypes) || nextWriterLevels !== currentWriterLevels) {
+      throw new ApiError("학생이 입장한 뒤에는 작가 구성과 참가자 수준을 바꿀 수 없어요.", 409);
+    }
+  }
+
+  const now = Date.now();
+  const seedIndex = room.genre === settings.genre ? room.seed_index : makeSeedIndex(room.room_code, settings.genre);
+  const eventIndex = room.genre === settings.genre ? room.event_index : makeEventIndex(room.room_code, settings.genre);
+  const fallbackSeed = createFallbackSeed(settings.genre, seedIndex);
+  const seed = settings.seed.source === "manual" || settings.seed.source === "reference" ? settings.seed : fallbackSeed;
+  const seedSource = settings.seed.source === "manual" || settings.seed.source === "reference" || settings.seed.source === "ai"
+    ? settings.seed.source
+    : "fallback";
+  const statements = [
+    db
+      .prepare(
+        `UPDATE rooms
+         SET writer_limit = ?, human_limit = ?, ai_limit = ?, writer_levels = ?, genre = ?,
+             turn_limit = ?, turn_seconds = ?, order_mode = ?,
+             moderation_nsfw = ?, moderation_hate = ?, moderation_threat = ?, moderation_slang = ?,
+             moderation_warning_lock = ?, moderation_warning_limit = ?,
+             seed_index = ?, event_index = ?, story_title = ?, story_setup = ?, story_opener = ?, seed_source = ?,
+             reference_note = ?, ai_generation_status = 'idle', ai_generation_claim = NULL, ai_generation_claimed_at = NULL,
+             ai_generation_state = NULL, analysis_status = 'idle', analysis_report = NULL, updated_at = ?
+         WHERE room_code = ? AND status = 'lobby'
+           AND (? > 0 OR NOT EXISTS (
+             SELECT 1 FROM participants guard_participant
+             WHERE guard_participant.room_code = ? AND guard_participant.writer_type = 'human'
+           ))`,
+      )
+      .bind(
+        settings.writerLimit,
+        settings.humanLimit,
+        settings.aiLimit,
+        JSON.stringify(settings.writerLevels),
+        settings.genre,
+        settings.turnLimit,
+        settings.turnSeconds,
+        settings.orderMode,
+        settings.moderationSettings.nsfw ? 1 : 0,
+        settings.moderationSettings.hate ? 1 : 0,
+        settings.moderationSettings.threat ? 1 : 0,
+        settings.moderationSettings.slang ? 1 : 0,
+        settings.moderationSettings.warningLock ? 1 : 0,
+        settings.moderationSettings.warningLimit,
+        seedIndex,
+        eventIndex,
+        seed.title,
+        seed.setup,
+        seed.opener,
+        seedSource,
+        settings.seed.referenceNote,
+        now,
+        room.room_code,
+        humanCount,
+        room.room_code,
+      ),
+  ];
+
+  if (humanCount === 0) {
+    const aiParticipants = makeAiParticipants(room.room_code, settings.writerTypes, now, settings.writerLevels);
+    statements.push(
+      db
+        .prepare(
+          `DELETE FROM participants
+           WHERE room_code = ? AND writer_type = 'ai'
+             AND NOT EXISTS (
+               SELECT 1 FROM participants guard_participant
+               WHERE guard_participant.room_code = ? AND guard_participant.writer_type = 'human'
+             )`,
+        )
+        .bind(room.room_code, room.room_code),
+      ...aiParticipants.map((participant) =>
+        db
+          .prepare(
+            `INSERT INTO participants (
+              id, room_code, writer_name, writer_type, ai_role, token_hash, slot_index, joined_at
+            )
+            SELECT ?, ?, ?, 'ai', ?, NULL, ?, ?
+            WHERE NOT EXISTS (
+              SELECT 1 FROM participants guard_participant
+              WHERE guard_participant.room_code = ? AND guard_participant.writer_type = 'human'
+            )`,
+          )
+          .bind(
+            participant.id,
+            participant.roomCode,
+            participant.writerName,
+            participant.aiRole,
+            participant.slotIndex,
+            participant.joinedAt,
+            room.room_code,
+          ),
+      ),
+    );
+  }
+
+  const [result] = await db.batch(statements);
+  if (result.meta?.changes !== 1) throw new ApiError("방 설정을 저장하지 못했어요. 상태를 새로고침해 주세요.", 409);
+
+  const [nextRoom, nextParticipants, turns] = await Promise.all([
+    getRoomByCode(db, room.room_code),
+    getParticipants(db, room.room_code),
+    getStoryTurns(db, room.room_code),
+  ]);
+  return json({ room: safeRoom(nextRoom, nextParticipants, turns, { teacher: true }), message: "방 설정을 저장했어요." });
+}
+
+function getConfiguredWriterTypes(room: RoomRow, participants: ParticipantRow[]): WriterType[] {
+  return Array.from({ length: room.writer_limit }, (_, slotIndex) => {
+    const occupied = participants.find((participant) => participant.slot_index === slotIndex);
+    return occupied?.writer_type ?? "human";
+  });
 }
 
 async function resetWarnings(db: D1Database, room: RoomRow, participantId: unknown) {

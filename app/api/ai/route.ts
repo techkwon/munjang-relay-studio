@@ -39,12 +39,17 @@ type WritingReport = {
   summary: string;
   collaborationHighlights: string[];
   writers: Array<{
+    participantId?: string;
     name: string;
+    level?: WriterLevel;
     contributionShare: number;
     paragraphs: number;
     characters: number;
     strengths: string[];
+    evidenceSnippets?: string[];
+    evidenceNotes?: string[];
     nextStep: string;
+    practicePrompt?: string;
   }>;
   groupSuggestion: string;
   disclaimer: string;
@@ -249,13 +254,13 @@ async function reportRoom(db: D1Database, initialRoom: RoomRow) {
     const solarReport = await generateSolarJson<WritingReport>({
       schemaName: "writing_report",
       schema: reportSchema,
-      maxTokens: 1200,
+      maxTokens: 1800,
       temperature: 0.22,
       messages: [
         {
           role: "system",
           content:
-            `너는 초중고 학생이 함께 쓰는 교실 글쓰기 활동을 돕는 교사 보조자다. 사람 작가의 문장 근거만 분석하고, 분량·비율·순서를 실력으로 해석하지 않는다. 순위화·점수화 없이 장점과 다음 연습으로 제안한다. 근거가 부족하면 과장 없이 제한적으로 말한다. 반드시 JSON 스키마를 지킨다.\n${buildReportLevelGuidance(metrics.map((metric) => ({ name: metric.promptName, level: metric.level })))}`,
+            `너는 초중고 학생이 함께 쓰는 교실 글쓰기 활동을 돕는 교사 보조자다. 사람 작가의 문장 근거만 분석하고, 분량·비율·순서를 실력으로 해석하지 않는다. 순위화·점수화 없이 장점과 다음 연습으로 제안한다. 근거가 부족하면 과장 없이 제한적으로 말한다. 작가 이름은 반드시 제공된 익명 이름만 사용하고 실제 이름이나 participantId를 추측하지 않는다. evidenceNotes는 직접 인용이 아니라 관찰 메모로만 쓴다. 반드시 JSON 스키마를 지킨다.\n${buildReportLevelGuidance(metrics.map((metric) => ({ name: metric.promptName, level: metric.level })))}`,
         },
         {
           role: "user",
@@ -491,25 +496,35 @@ function buildReportPrompt(room: RoomRow, metrics: HumanMetric[], turns: StoryTu
     ),
     "완성 이야기:",
     story,
-    "요청: 사람 작가만 대상으로 장점 1~3개와 다음 연습 1개를 제안해 줘. 각 장점은 실제 문장 근거에 연결하되 긴 직접 인용은 피한다. AI 작가는 평가하지 마. 기여 비율과 글자 수는 참여량 참고일 뿐 실력으로 해석하지 마. 순위, 비교 비난, 점수화는 하지 마. 글이 적으면 근거가 적다고 부드럽게 말해.",
+    "요청: 사람 작가만 대상으로 장점 1~3개, evidenceNotes 1~3개, 다음 연습 1개, practicePrompt 1개를 제안해 줘. 각 장점은 실제 문장 근거에 연결하되 직접 인용문은 만들지 말고 관찰 메모로 설명해. AI 작가는 평가하지 마. 기여 비율과 글자 수는 참여량 참고일 뿐 실력으로 해석하지 마. 순위, 비교 비난, 점수화는 하지 마. 글이 적으면 근거가 적다고 부드럽게 말해.",
   ].join("\n");
 }
 
 function normalizeReport(report: WritingReport, metrics: HumanMetric[]): WritingReport {
-  const metricByName = new Map(metrics.map((metric) => [metric.participant.writer_name, metric]));
+  const metricByName = new Map(metrics.map((metric) => [metric.promptName, metric]));
+  const modelWriters = Array.isArray(report.writers) ? report.writers : [];
   return {
     summary: limitText(report.summary, 300, "함께 이야기를 완성하며 장면과 문장을 이어 가는 연습을 했습니다."),
     collaborationHighlights: normalizeStringArray(report.collaborationHighlights, 3, "서로의 문장을 이어 받아 이야기를 완성했습니다."),
     writers: metrics.map((metric, index) => {
-      const writer = report.writers.find((item) => [metric.promptName, metric.participant.writer_name].includes(item.name)) ?? report.writers[index];
-      const sourceMetric = metricByName.get(metric.participant.writer_name) ?? metric;
+      const writer = modelWriters.find((item) => item.name === metric.promptName) ?? (Array.isArray(report.writers) ? report.writers[index] : undefined);
+      const sourceMetric = metricByName.get(metric.promptName) ?? metric;
       return {
+        participantId: metric.participant.id,
         name: metric.participant.writer_name,
+        level: metric.level,
         contributionShare: sourceMetric.contributionShare,
         paragraphs: sourceMetric.paragraphs,
         characters: sourceMetric.characters,
         strengths: normalizeStringArray(writer?.strengths, 3, "이야기 흐름을 이어 가려는 시도가 좋았습니다."),
+        evidenceSnippets: buildEvidenceSnippets(metric.texts),
+        evidenceNotes: normalizeStringArray(writer?.evidenceNotes, 3, "제출한 문장을 바탕으로 장면을 이어 가려는 시도가 보입니다."),
         nextStep: limitText(writer?.nextStep, 160, "다음에는 장면의 소리, 색, 행동을 한 가지 더 넣어 보세요."),
+        practicePrompt: limitText(
+          writer?.practicePrompt,
+          180,
+          `${WRITER_LEVEL_LABELS[metric.level]} 수준에 맞게 앞 문단에서 중요한 단어 하나를 골라 새 문장에 다시 써 보세요.`,
+        ),
       };
     }),
     groupSuggestion: limitText(report.groupSuggestion, 220, "다음 활동에서는 앞 문단의 중요한 단어 하나를 골라 다음 문단에 다시 활용해 보세요."),
@@ -521,6 +536,14 @@ function normalizeStringArray(value: unknown, maxItems: number, fallback: string
   if (!Array.isArray(value)) return [fallback];
   const normalized = value.map((item) => limitText(item, 120, "")).filter(Boolean).slice(0, maxItems);
   return normalized.length > 0 ? normalized : [fallback];
+}
+
+function buildEvidenceSnippets(texts: string[]) {
+  return texts
+    .map((text) => minimizeClassroomText(text))
+    .map((text) => limitTextAtBoundary(text, 90, ""))
+    .filter(Boolean)
+    .slice(0, 3);
 }
 
 function enforceAiRetryCooldown(room: RoomRow, action: "seed" | "continue" | "report") {
@@ -588,9 +611,11 @@ const reportSchema = {
           paragraphs: { type: "number" },
           characters: { type: "number" },
           strengths: { type: "array", items: { type: "string" } },
+          evidenceNotes: { type: "array", items: { type: "string" } },
           nextStep: { type: "string" },
+          practicePrompt: { type: "string" },
         },
-        required: ["name", "contributionShare", "paragraphs", "characters", "strengths", "nextStep"],
+        required: ["name", "contributionShare", "paragraphs", "characters", "strengths", "evidenceNotes", "nextStep", "practicePrompt"],
       },
     },
     groupSuggestion: { type: "string" },

@@ -1,14 +1,27 @@
 import { env } from "cloudflare:workers";
 
-export type Genre = "all" | "adventure" | "fantasy" | "mystery" | "daily" | "space";
+export type Genre = "all" | "free" | "adventure" | "fantasy" | "mystery" | "daily" | "space";
 export type RoomStatus = "lobby" | "active" | "complete" | "closed";
 export type TurnStatus = "pending" | "submitted" | "skipped";
 export type WriterType = "human" | "ai";
 export type WriterLevel = "elementary" | "middle" | "high";
 export type OrderMode = "sequential" | "random";
-export type SeedSource = "ai" | "fallback";
+export type SeedSource = "ai" | "fallback" | "manual" | "reference";
 export type AsyncStatus = "idle" | "pending" | "running" | "complete" | "failed";
 export type ModerationCategory = "nsfw" | "hate" | "threat" | "slang";
+export type MaterialKind = "image" | "pdf";
+
+export type R2ObjectBody = {
+  body: ReadableStream<Uint8Array> | null;
+  httpMetadata?: { contentType?: string };
+  writeHttpMetadata(headers: Headers): void;
+};
+
+export type R2Bucket = {
+  put(key: string, value: ArrayBuffer | ArrayBufferView | ReadableStream, options?: { httpMetadata?: { contentType?: string } }): Promise<unknown>;
+  get(key: string): Promise<R2ObjectBody | null>;
+  delete(key: string): Promise<void>;
+};
 
 export type ModerationSettings = Record<ModerationCategory, boolean> & {
   warningLock: boolean;
@@ -34,6 +47,7 @@ export type D1Database = {
 
 export type CloudflareEnv = {
   DB?: D1Database;
+  ROOM_ASSETS?: R2Bucket;
   UPSTAGE_API_KEY?: string;
   UPSTAGE_MODEL?: string;
 };
@@ -64,6 +78,13 @@ export type RoomRow = {
   story_setup: string;
   story_opener: string;
   seed_source: SeedSource;
+  reference_note: string | null;
+  material_kind: MaterialKind | null;
+  material_name: string | null;
+  material_mime: string | null;
+  material_size: number | null;
+  material_key: string | null;
+  material_note: string | null;
   ai_generation_status: AsyncStatus;
   ai_generation_claim: string | null;
   ai_generation_claimed_at: number | null;
@@ -119,10 +140,19 @@ export type NewRoomSettings = {
   turnSeconds: number;
   orderMode: OrderMode;
   moderationSettings: ModerationSettings;
+  seed: RoomSeedSettings;
+};
+
+export type RoomSeedSettings = {
+  source: SeedSource;
+  title: string;
+  setup: string;
+  opener: string;
+  referenceNote: string | null;
 };
 
 const ROOM_CODE_CHARACTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-const GENRES: Genre[] = ["all", "adventure", "fantasy", "mystery", "daily", "space"];
+const GENRES: Genre[] = ["all", "free", "adventure", "fantasy", "mystery", "daily", "space"];
 const TURN_LIMITS = [6, 8, 10, 12];
 const TURN_SECONDS = [45, 60, 90];
 const AI_ROLES = [
@@ -144,6 +174,13 @@ const FALLBACK_SEEDS: Record<Genre, Array<{ title: string; setup: string; opener
       title: "깜박이는 첫 문장",
       setup: "서로 다른 작가의 문장이 하나의 이야기로 이어지는 릴레이입니다.",
       opener: "창문 너머에서 파란 불빛이 세 번 깜박이자, 모두가 첫 문장을 기다렸습니다.",
+    },
+  ],
+  free: [
+    {
+      title: "오늘의 빈칸",
+      setup: "주제를 정해 두지 않고 작가들이 떠올린 장면과 사건을 자연스럽게 이어 갑니다.",
+      opener: "아무 표시도 없던 칠판 한가운데에, 누군가의 이름처럼 보이는 빈칸 하나가 천천히 나타났습니다.",
     },
   ],
   adventure: [
@@ -187,6 +224,12 @@ export function getDb(): D1Database {
   const db = (env as unknown as CloudflareEnv).DB;
   if (!db) throw new ApiError("데이터베이스가 아직 연결되지 않았어요.", 503);
   return db;
+}
+
+export function getRoomAssets(): R2Bucket {
+  const bucket = (env as unknown as CloudflareEnv).ROOM_ASSETS;
+  if (!bucket) throw new ApiError("자료 저장소가 아직 연결되지 않았어요.", 503);
+  return bucket;
 }
 
 export class ApiError extends Error {
@@ -246,6 +289,7 @@ export function parseRoomSettings(body: Record<string, unknown>): NewRoomSetting
     turnSeconds: parseAllowedNumber(body.turnSeconds, TURN_SECONDS, 60),
     orderMode: body.orderMode === "random" ? "random" : "sequential",
     moderationSettings: parseModerationSettings(body),
+    seed: parseRoomSeedSettings(body, genre),
   };
 }
 
@@ -275,7 +319,12 @@ export function makeTurnParticipantOrder(participants: ParticipantRow[], orderMo
     .map(({ participant }, slotIndex) => ({ ...participant, slot_index: slotIndex }));
 }
 
-export function safeRoom(room: RoomRow, participants: ParticipantRow[] = [], turns: StoryTurnRow[] = [], options: { teacher?: boolean } = {}) {
+export function safeRoom(
+  room: RoomRow,
+  participants: ParticipantRow[] = [],
+  turns: StoryTurnRow[] = [],
+  options: { teacher?: boolean; participantId?: string } = {},
+) {
   const currentTurn = turns.find((turn) => turn.turn_index === room.current_turn_index) ?? null;
   const resolvedOrder = turns
     .slice()
@@ -285,6 +334,7 @@ export function safeRoom(room: RoomRow, participants: ParticipantRow[] = [], tur
   const teacherModeration = options.teacher
     ? { moderationSettings: getRoomModerationSettings(room) }
     : {};
+  const material = safeMaterial(room, { includeAvailabilityOnly: !options.teacher && !options.participantId });
   return {
     roomCode: room.room_code,
     status: room.status,
@@ -303,12 +353,14 @@ export function safeRoom(room: RoomRow, participants: ParticipantRow[] = [], tur
     storySetup: room.story_setup,
     storyOpener: room.story_opener,
     seedSource: room.seed_source,
+    referenceNote: room.reference_note,
+    material,
     ...teacherModeration,
     aiGenerationStatus: room.ai_generation_status,
     aiGenerationState: safeJsonParse(room.ai_generation_state),
     writerLevels: getRoomWriterLevels(room),
     analysisStatus: room.analysis_status,
-    analysisReport: safeJsonParse(room.analysis_report),
+    analysisReport: safeAnalysisReport(room, participants, options),
     createdAt: room.created_at,
     updatedAt: room.updated_at,
     startedAt: room.started_at,
@@ -696,6 +748,49 @@ function parseModerationSettings(body: Record<string, unknown>): ModerationSetti
   };
 }
 
+export function parseRoomSeedSettings(body: Record<string, unknown>, genre: Genre): RoomSeedSettings {
+  const fallback = createFallbackSeed(genre, 0);
+  const source = parseSeedSource(body.seedSource ?? body.seedMode ?? body.openingMode);
+  if (source === "manual" || source === "reference") {
+    return {
+      source,
+      title: normalizeSeedText(body.storyTitle ?? body.title ?? body.seedTitle, 2, 40, "이야기 제목을 2~40자로 입력해 주세요."),
+      setup: normalizeSeedText(body.storySetup ?? body.setup ?? body.seedSetup, 10, 220, "상황 설명을 10~220자로 입력해 주세요."),
+      opener: normalizeSeedText(body.storyOpener ?? body.opener ?? body.seedOpener, 10, 160, "첫 문장을 10~160자로 입력해 주세요."),
+      referenceNote: source === "reference" ? normalizeOptionalText(body.referenceNote ?? body.materialNote, 800) : null,
+    };
+  }
+  return {
+    source: body.seedSource === "ai" || body.seedMode === "ai" || body.openingMode === "ai" ? "ai" : "fallback",
+    title: fallback.title,
+    setup: fallback.setup,
+    opener: fallback.opener,
+    referenceNote: null,
+  };
+}
+
+function parseSeedSource(value: unknown): SeedSource {
+  if (value === "material") return "reference";
+  if (value === "manual" || value === "reference" || value === "ai") return value;
+  return "fallback";
+}
+
+function normalizeSeedText(value: unknown, min: number, max: number, message: string) {
+  if (typeof value !== "string") throw new ApiError(message, 400);
+  const text = value.trim().replace(/\s+/g, " ");
+  if (text.length < min || text.length > max) throw new ApiError(message, 400);
+  return text;
+}
+
+export function normalizeOptionalText(value: unknown, max: number) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string") throw new ApiError("참고 메모 형식이 올바르지 않아요.", 400);
+  const text = value.trim().replace(/\s+/g, " ");
+  if (!text) return null;
+  if (text.length > max) throw new ApiError(`참고 메모는 ${max}자까지만 입력해 주세요.`, 400);
+  return text;
+}
+
 function parseWarningLimit(value: unknown) {
   const numeric = Number(value ?? 3);
   if (!Number.isInteger(numeric) || numeric < 2 || numeric > 5) return 3;
@@ -722,6 +817,51 @@ function parseModerationCategories(value: string | null): ModerationCategory[] {
   } catch {
     return [];
   }
+}
+
+function safeMaterial(room: RoomRow, options: { includeAvailabilityOnly?: boolean } = {}) {
+  if (!room.material_kind || !room.material_name || !room.material_mime || !room.material_size) return null;
+  const base = {
+    kind: room.material_kind,
+    name: room.material_name,
+    mime: room.material_mime,
+    size: room.material_size,
+    note: room.material_note,
+    available: Boolean(room.material_key),
+  };
+  if (options.includeAvailabilityOnly) {
+    return {
+      kind: base.kind,
+      name: base.name,
+      size: base.size,
+      note: base.note,
+      available: base.available,
+    };
+  }
+  return base;
+}
+
+function safeAnalysisReport(room: RoomRow, participants: ParticipantRow[], options: { teacher?: boolean; participantId?: string }) {
+  const report = safeJsonParse(room.analysis_report);
+  if (!report) return null;
+  if (options.teacher) return report;
+  if (!options.participantId) return null;
+  if (!report || typeof report !== "object" || Array.isArray(report)) return report;
+
+  const participant = participants.find((item) => item.id === options.participantId);
+  if (!participant) return null;
+  const source = report as Record<string, unknown>;
+  const writers = Array.isArray(source.writers)
+    ? source.writers.filter((writer) => {
+        if (!writer || typeof writer !== "object") return false;
+        const item = writer as Record<string, unknown>;
+        return item.participantId === participant.id || item.name === participant.writer_name || item.writerName === participant.writer_name;
+      })
+    : [];
+  return {
+    ...source,
+    writers,
+  };
 }
 
 function validateWriterComposition(writerTypes: WriterType[]) {

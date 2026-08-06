@@ -43,7 +43,7 @@ export async function GET(request: Request) {
 
     if (token) {
       const participant = await getParticipantByToken(db, roomCode, token);
-      return json({ room: safeRoom(room, participants, turns), participant: safeParticipant(participant, room, { includeModeration: true }) });
+      return json({ room: safeRoom(room, participants, turns, { participantId: participant.id }), participant: safeParticipant(participant, room, { includeModeration: true }) });
     }
 
     return json({ room: safeRoomPreview(room, participants) });
