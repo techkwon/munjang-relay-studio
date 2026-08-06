@@ -11,6 +11,8 @@ type WriterKind = "human" | "ai";
 type WriterLevel = "elementary" | "middle" | "high";
 type TeacherView = "rooms" | "create";
 type RoomTab = "share" | "run" | "story" | "analysis";
+type SeedMode = "ai" | "manual" | "material";
+type FormMode = "create" | "copy" | "edit";
 
 type RoomWriter = {
   id: string;
@@ -29,6 +31,41 @@ type RoomEntry = {
   writerName: string;
   text: string;
   skipped?: boolean;
+};
+
+type RoomMaterial = {
+  id?: string;
+  name?: string;
+  type?: "image" | "pdf" | "note";
+  mimeType?: string;
+  size?: number;
+  available?: boolean;
+  url?: string;
+  note?: string;
+};
+
+type WriterReport = {
+  participantId?: string;
+  name?: string;
+  writerName?: string;
+  level?: WriterLevel;
+  contributionShare?: number;
+  paragraphs?: number;
+  characters?: number;
+  strengths?: string[];
+  evidence?: string[];
+  evidenceSnippets?: string[];
+  evidenceNotes?: string[];
+  nextStep?: string;
+  practicePrompt?: string;
+};
+
+type AnalysisReport = {
+  summary?: string;
+  collaborationHighlights?: string[];
+  writers?: WriterReport[];
+  groupSuggestion?: string;
+  disclaimer?: string;
 };
 
 type Room = {
@@ -51,9 +88,13 @@ type Room = {
   storySetup?: string | null;
   storyOpener?: string | null;
   seedSource?: string | null;
+  seedMode?: SeedMode | null;
+  referenceNote?: string | null;
+  material?: RoomMaterial | null;
+  moderationSettings?: ModerationSettings;
   aiGenerationStatus?: string | null;
   analysisStatus?: string | null;
-  analysisReport?: unknown;
+  analysisReport?: AnalysisReport | null;
   participants?: RoomWriter[];
   writers?: RoomWriter[];
   entries?: RoomEntry[];
@@ -89,6 +130,7 @@ const MODERATION_OPTIONS: Array<{ key: keyof Omit<ModerationSettings, "warningLi
 
 const GENRES = [
   ["all", "랜덤"],
+  ["free", "자유 주제"],
   ["adventure", "모험"],
   ["fantasy", "판타지"],
   ["mystery", "미스터리"],
@@ -117,6 +159,14 @@ const STATUS_LABEL: Record<RoomStatus, string> = {
   closed: "마감",
 };
 
+const MATERIAL_MAX_BYTES = 10 * 1024 * 1024;
+
+function normalizeSeedMode(value: unknown): SeedMode {
+  if (value === "manual") return value;
+  if (value === "material" || value === "reference") return "material";
+  return "ai";
+}
+
 function normalizeWriterLevel(value: unknown): WriterLevel {
   if (value === "elementary" || value === "middle" || value === "high") return value;
   return "elementary";
@@ -128,6 +178,70 @@ function getErrorMessage(payload: unknown, fallback: string) {
     if (typeof error === "string") return error;
   }
   return fallback;
+}
+
+function normalizeMaterial(value: unknown): RoomMaterial | null {
+  if (!value || typeof value !== "object") return null;
+  const material = value as Record<string, unknown>;
+  const mimeType = typeof material.mimeType === "string"
+    ? material.mimeType
+    : typeof material.mime === "string"
+      ? material.mime
+      : typeof material.type === "string"
+        ? material.type
+        : "";
+  const materialType = mimeType.includes("pdf")
+    ? "pdf"
+    : mimeType.startsWith("image/")
+      ? "image"
+      : material.kind === "pdf" || material.type === "pdf"
+        ? "pdf"
+        : material.kind === "image" || material.type === "image"
+          ? "image"
+          : "note";
+  return {
+    id: typeof material.id === "string" ? material.id : typeof material.materialId === "string" ? material.materialId : undefined,
+    name: typeof material.name === "string" ? material.name : typeof material.filename === "string" ? material.filename : undefined,
+    type: materialType,
+    mimeType,
+    size: typeof material.size === "number" ? material.size : undefined,
+    available: material.available === true || typeof material.url === "string" || typeof material.downloadUrl === "string",
+    url: typeof material.url === "string" ? material.url : typeof material.downloadUrl === "string" ? material.downloadUrl : undefined,
+    note: typeof material.note === "string" ? material.note : typeof material.referenceNote === "string" ? material.referenceNote : undefined,
+  };
+}
+
+function parseAnalysisReport(value: unknown): AnalysisReport | null {
+  if (!value) return null;
+  let report: AnalysisReport;
+  try {
+    report = typeof value === "object" ? value as AnalysisReport : JSON.parse(String(value)) as AnalysisReport;
+  } catch {
+    return null;
+  }
+  return {
+    ...report,
+    writers: (report.writers ?? []).map((writer) => ({
+      ...writer,
+      evidence: writer.evidenceSnippets ?? writer.evidence ?? [],
+    })),
+  };
+}
+
+function normalizeModerationSettings(value: unknown): ModerationSettings {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return DEFAULT_MODERATION_SETTINGS;
+  const settings = value as Record<string, unknown>;
+  const warningLimit = Number(settings.warningLimit);
+  return {
+    nsfw: typeof settings.nsfw === "boolean" ? settings.nsfw : DEFAULT_MODERATION_SETTINGS.nsfw,
+    hate: typeof settings.hate === "boolean" ? settings.hate : DEFAULT_MODERATION_SETTINGS.hate,
+    threat: typeof settings.threat === "boolean" ? settings.threat : DEFAULT_MODERATION_SETTINGS.threat,
+    slang: typeof settings.slang === "boolean" ? settings.slang : DEFAULT_MODERATION_SETTINGS.slang,
+    warningLock: typeof settings.warningLock === "boolean" ? settings.warningLock : DEFAULT_MODERATION_SETTINGS.warningLock,
+    warningLimit: Number.isInteger(warningLimit) && warningLimit >= 2 && warningLimit <= 5
+      ? warningLimit
+      : DEFAULT_MODERATION_SETTINGS.warningLimit,
+  };
 }
 
 function normalizeRoom(payload: unknown): Room | null {
@@ -155,6 +269,7 @@ function normalizeRoom(payload: unknown): Room | null {
   const currentParticipantId = typeof current?.participantId === "string" ? current.participantId : "";
   const currentPosition = participants.find((writer) => writer.id === currentParticipantId)?.position ?? 0;
   const story = value.story && typeof value.story === "object" ? value.story as Record<string, unknown> : {};
+  const material = normalizeMaterial(value.material ?? value.referenceMaterial ?? value.writingMaterial);
   const rawEntries = Array.isArray(story.entries) ? story.entries as Array<Record<string, unknown>> : [];
   const entries: RoomEntry[] = rawEntries.map((entry, index) => ({
     id: `${code}-${entry.turnIndex ?? index}`,
@@ -186,9 +301,13 @@ function normalizeRoom(payload: unknown): Room | null {
     storySetup: typeof value.storySetup === "string" ? value.storySetup : null,
     storyOpener: typeof value.storyOpener === "string" ? value.storyOpener : null,
     seedSource: typeof value.seedSource === "string" ? value.seedSource : null,
+    seedMode: normalizeSeedMode(value.seedMode ?? value.seedSource),
+    referenceNote: typeof value.referenceNote === "string" ? value.referenceNote : material?.note ?? null,
+    material,
+    moderationSettings: normalizeModerationSettings(value.moderationSettings),
     aiGenerationStatus: typeof value.aiGenerationStatus === "string" ? value.aiGenerationStatus : null,
     analysisStatus: typeof value.analysisStatus === "string" ? value.analysisStatus : null,
-    analysisReport: value.analysisReport,
+    analysisReport: parseAnalysisReport(value.analysisReport),
     participants,
     entries,
     participantCount: participants.filter((writer) => writer.kind === "human").length,
@@ -226,38 +345,47 @@ function getFinalStoryText(room: Room) {
   return lines.join("\n\n");
 }
 
-function getAnalysisReportText(report: unknown) {
-  if (!report || typeof report !== "object") return "";
-  const value = report as {
-    summary?: unknown;
-    collaborationHighlights?: unknown;
-    writers?: unknown;
-    groupSuggestion?: unknown;
-    disclaimer?: unknown;
-  };
-  const writerLines = Array.isArray(value.writers)
-    ? value.writers.map((writer) => {
-        const item = writer as Record<string, unknown>;
-        const strengths = Array.isArray(item.strengths) ? item.strengths.join(", ") : "";
+function getWriterReportText(writer: WriterReport) {
+  const strengths = Array.isArray(writer.strengths) ? writer.strengths.join(", ") : "";
+  const evidence = Array.isArray(writer.evidence) ? writer.evidence.join(" / ") : "";
+  const evidenceNotes = Array.isArray(writer.evidenceNotes) ? writer.evidenceNotes.join(" / ") : "";
+  return [
+    `${writer.name ?? writer.writerName ?? "작가"} 세부 분석`,
+    `기여: ${writer.contributionShare ?? 0}% · ${writer.paragraphs ?? 0}문단 · ${writer.characters ?? 0}자`,
+    strengths ? `장점: ${strengths}` : "",
+    evidence ? `근거 문장: ${evidence}` : "",
+    evidenceNotes ? `관찰: ${evidenceNotes}` : "",
+    writer.nextStep ? `다음 연습: ${writer.nextStep}` : "",
+    writer.practicePrompt ? `연습 문장: ${writer.practicePrompt}` : "",
+  ].filter(Boolean).join("\n");
+}
+
+function getAnalysisReportText(report: AnalysisReport | null | undefined) {
+  if (!report) return "";
+  const writerLines = Array.isArray(report.writers)
+    ? report.writers.map((writer) => {
         return [
-          `- ${String(item.name ?? "작가")}`,
-          `  기여: ${String(item.contributionShare ?? 0)}% · ${String(item.paragraphs ?? 0)}문단 · ${String(item.characters ?? 0)}자`,
-          strengths ? `  장점: ${strengths}` : "",
-          item.nextStep ? `  다음 연습: ${String(item.nextStep)}` : "",
+          `- ${writer.name ?? writer.writerName ?? "작가"}`,
+          `  기여: ${writer.contributionShare ?? 0}% · ${writer.paragraphs ?? 0}문단 · ${writer.characters ?? 0}자`,
+          Array.isArray(writer.strengths) && writer.strengths.length > 0 ? `  장점: ${writer.strengths.join(", ")}` : "",
+          Array.isArray(writer.evidence) && writer.evidence.length > 0 ? `  근거: ${writer.evidence.join(" / ")}` : "",
+          Array.isArray(writer.evidenceNotes) && writer.evidenceNotes.length > 0 ? `  관찰: ${writer.evidenceNotes.join(" / ")}` : "",
+          writer.nextStep ? `  다음 연습: ${writer.nextStep}` : "",
+          writer.practicePrompt ? `  연습 문장: ${writer.practicePrompt}` : "",
         ].filter(Boolean).join("\n");
       })
     : [];
-  const highlights = Array.isArray(value.collaborationHighlights)
-    ? value.collaborationHighlights.map((item) => `- ${String(item)}`)
+  const highlights = Array.isArray(report.collaborationHighlights)
+    ? report.collaborationHighlights.map((item) => `- ${String(item)}`)
     : [];
   return [
     "AI 글쓰기 분석 보고서",
     "",
-    value.summary ? String(value.summary) : "",
+    report.summary ? String(report.summary) : "",
     highlights.length > 0 ? `협업 하이라이트\n${highlights.join("\n")}` : "",
     writerLines.length > 0 ? `작가별 피드백\n${writerLines.join("\n")}` : "",
-    value.groupSuggestion ? `함께 해 볼 연습\n${String(value.groupSuggestion)}` : "",
-    value.disclaimer ? String(value.disclaimer) : "",
+    report.groupSuggestion ? `함께 해 볼 연습\n${String(report.groupSuggestion)}` : "",
+    report.disclaimer ? String(report.disclaimer) : "",
   ].filter(Boolean).join("\n\n");
 }
 
@@ -292,6 +420,14 @@ export function TeacherDashboard({
   const [writerTypes, setWriterTypes] = useState<WriterKind[]>(["human", "human", "human", "ai"]);
   const [writerLevels, setWriterLevels] = useState<WriterLevel[]>(["elementary", "elementary", "elementary", "elementary"]);
   const [moderationSettings, setModerationSettings] = useState<ModerationSettings>(DEFAULT_MODERATION_SETTINGS);
+  const [formMode, setFormMode] = useState<FormMode>("create");
+  const [editRoomCode, setEditRoomCode] = useState<string | null>(null);
+  const [seedMode, setSeedMode] = useState<SeedMode>("ai");
+  const [manualTitle, setManualTitle] = useState("");
+  const [manualSetup, setManualSetup] = useState("");
+  const [manualOpener, setManualOpener] = useState("");
+  const [referenceNote, setReferenceNote] = useState("");
+  const [materialFile, setMaterialFile] = useState<File | null>(null);
   const [genre, setGenre] = useState("all");
   const [turnLimit, setTurnLimit] = useState(8);
   const [turnSeconds, setTurnSeconds] = useState(60);
@@ -324,6 +460,8 @@ export function TeacherDashboard({
     ...emptyHumanPositions.map((position) => ({ type: "empty" as const, position })),
   ].sort((a, b) => a.position - b.position);
   const currentAiTurn = Boolean(selectedRoom?.status === "active" && currentWriter?.kind === "ai");
+  const selectedRoomCanEditSettings = Boolean(selectedRoom?.status === "lobby");
+  const participantControlsLocked = Boolean(formMode === "edit" && selectedRoom && humanJoined > 0);
   const selectedAiFailure = selectedRoom && aiFailure?.roomId === selectedRoom.id ? aiFailure : null;
   const statusFailureAction =
     selectedRoom?.analysisStatus === "failed"
@@ -343,7 +481,18 @@ export function TeacherDashboard({
   const humanWriterCount = activeWriterTypes.filter((kind) => kind === "human").length;
   const aiWriterCount = participantCount - humanWriterCount;
   const totalWriters = participantCount;
-  const canCreateRoom = totalWriters >= 2 && totalWriters <= 10 && humanWriterCount >= 1 && turnLimit >= totalWriters;
+  const hasValidManualSeed = seedMode === "ai" || (
+    manualTitle.trim().length >= 2
+    && manualSetup.trim().length >= 10
+    && manualOpener.trim().length >= 10
+  );
+  const hasReferenceMaterial = seedMode !== "material" || Boolean(materialFile || (formMode === "edit" && selectedRoom?.material));
+  const canSubmitRoomForm = totalWriters >= 2
+    && totalWriters <= 10
+    && humanWriterCount >= 1
+    && turnLimit >= totalWriters
+    && hasValidManualSeed
+    && hasReferenceMaterial;
   const effectiveTeacherView = rooms.length === 0 ? "create" : teacherView;
   const defaultRoomTab: RoomTab = selectedRoom?.status === "lobby" ? "share" : selectedRoom?.status === "active" ? "run" : "analysis";
   const activeRoomTab = roomTab ?? defaultRoomTab;
@@ -351,6 +500,17 @@ export function TeacherDashboard({
   const levelSummary = LEVEL_OPTIONS
     .map((option) => `${option.label} ${formWriterLevels.filter((level) => level === option.value).length}`)
     .join(" · ");
+
+  const formTitle = formMode === "edit"
+    ? "대기방 설정 편집"
+    : formMode === "copy"
+      ? "기존 방 설정 복사"
+      : "새 이야기 방 만들기";
+  const formSubmitLabel = formMode === "edit"
+    ? "설정 저장"
+    : seedMode === "ai"
+      ? "방 개설 + AI 첫 문장"
+      : "방 개설";
 
   const loadRooms = useCallback(async (quiet = false) => {
     try {
@@ -459,8 +619,8 @@ export function TeacherDashboard({
     return () => window.clearTimeout(timer);
   }, [status]);
 
-  async function runAi(action: "seed" | "continue" | "report", roomId: string, quiet = false) {
-    if (aiBusyRef.current) return;
+  async function runAi(action: "seed" | "continue" | "report", roomId: string, quiet = false): Promise<boolean> {
+    if (aiBusyRef.current) return false;
     aiBusyRef.current = action;
     setAiBusyAction(action);
     if (!quiet) setStatus(action === "report" ? "AI 협업 리포트를 작성하고 있습니다." : "SOLAR 작가가 문장을 준비하고 있습니다.");
@@ -476,10 +636,12 @@ export function TeacherDashboard({
       await loadRooms(true);
       setAiFailure(null);
       if (!quiet) setStatus("AI 작업이 완료되었습니다.");
+      return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : "AI 요청을 처리하지 못했습니다.";
       setAiFailure({ roomId, action, message });
       if (!quiet) setStatus(message);
+      return false;
     } finally {
       aiBusyRef.current = null;
       setAiBusyAction(null);
@@ -560,6 +722,10 @@ export function TeacherDashboard({
   }
 
   function setParticipantCount(nextCount: number) {
+    if (participantControlsLocked) {
+      setStatus("학생이 입장한 뒤에는 참여자 숫자와 좌석 구성을 바꿀 수 없습니다.");
+      return;
+    }
     setWriterTypes((current) => {
       const next = current.slice(0, nextCount);
       while (next.length < nextCount) next.push(next.length === 0 ? "human" : "ai");
@@ -575,6 +741,10 @@ export function TeacherDashboard({
   }
 
   function setWriterKind(index: number, kind: WriterKind) {
+    if (participantControlsLocked) {
+      setStatus("학생이 입장한 뒤에는 사람/AI 좌석 구성을 바꿀 수 없습니다.");
+      return;
+    }
     const wouldRemoveLastHuman =
       kind === "ai" &&
       activeWriterTypes[index] === "human" &&
@@ -591,6 +761,10 @@ export function TeacherDashboard({
   }
 
   function setWriterLevel(index: number, level: WriterLevel) {
+    if (participantControlsLocked) {
+      setStatus("학생이 입장한 뒤에는 참가자 수준을 바꿀 수 없습니다.");
+      return;
+    }
     setWriterLevels((current) => {
       const next = [...current];
       next[index] = level;
@@ -602,44 +776,161 @@ export function TeacherDashboard({
     setModerationSettings((current) => ({ ...current, [key]: checked }));
   }
 
-  async function createRoom(event: React.FormEvent<HTMLFormElement>) {
+  function resetRoomForm() {
+    setFormMode("create");
+    setEditRoomCode(null);
+    setSeedMode("ai");
+    setManualTitle("");
+    setManualSetup("");
+    setManualOpener("");
+    setReferenceNote("");
+    setMaterialFile(null);
+    setGenre("all");
+    setTurnLimit(8);
+    setTurnSeconds(60);
+    setOrderMode("sequential");
+    setWriterTypes(["human", "human", "human", "ai"]);
+    setWriterLevels(["elementary", "elementary", "elementary", "elementary"]);
+    setModerationSettings(DEFAULT_MODERATION_SETTINGS);
+    setTeacherView("create");
+  }
+
+  function prefillRoomForm(room: Room, mode: Exclude<FormMode, "create">) {
+    const roomWriters = room.participants ?? room.writers ?? [];
+    const seatKinds = Array.from({ length: room.writerLimit }, (_, index): WriterKind => {
+      const writer = roomWriters.find((item) => item.position === index);
+      if (writer) return writer.kind;
+      return index < room.humanWriterCount ? "human" : "ai";
+    });
+    setFormMode(mode);
+    setEditRoomCode(mode === "edit" ? room.code : null);
+    setSeedMode(room.seedMode ?? (room.seedSource === "ai" ? "ai" : "manual"));
+    setManualTitle(room.storyTitle ?? room.title ?? "");
+    setManualSetup(room.storySetup ?? "");
+    setManualOpener(room.storyOpener ?? "");
+    setReferenceNote(room.referenceNote ?? room.material?.note ?? "");
+    setMaterialFile(null);
+    setGenre(room.genre);
+    setTurnLimit(room.turnLimit);
+    setTurnSeconds(room.turnSeconds);
+    setOrderMode(room.orderMode);
+    setWriterTypes(seatKinds);
+    setWriterLevels(Array.from({ length: room.writerLimit }, (_, index) => room.writerLevels[index] ?? "elementary"));
+    setModerationSettings(room.moderationSettings ?? DEFAULT_MODERATION_SETTINGS);
+    setTeacherView("create");
+    setStatus(mode === "copy" ? "설정을 복사했습니다. 자료 파일은 다시 첨부해 주세요." : "대기방 설정을 편집합니다.");
+  }
+
+  function onMaterialFileChange(file: File | null) {
+    if (!file) {
+      setMaterialFile(null);
+      return;
+    }
+    const supported = ["image/png", "image/jpeg", "image/webp", "application/pdf"].includes(file.type);
+    if (!supported) {
+      setStatus("이미지 또는 PDF 파일만 첨부할 수 있습니다.");
+      return;
+    }
+    if (file.size > MATERIAL_MAX_BYTES) {
+      setStatus("자료 파일은 10MiB 이하만 첨부할 수 있습니다.");
+      return;
+    }
+    setMaterialFile(file);
+    setSeedMode("material");
+  }
+
+  async function uploadMaterial(roomCode: string) {
+    if (!materialFile && !referenceNote.trim()) return;
+    const formData = new FormData();
+    formData.append("roomCode", roomCode);
+    formData.append("referenceNote", referenceNote.trim());
+    if (materialFile) formData.append("file", materialFile);
+    const response = await fetch("/api/teacher/rooms/material", {
+      method: "POST",
+      body: formData,
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(getErrorMessage(payload, "참고 자료를 저장하지 못했습니다."));
+  }
+
+  async function removeMaterial(roomCode: string) {
+    setBusy(true);
+    setStatus("참고 자료를 삭제하고 있습니다.");
+    try {
+      const response = await fetch("/api/teacher/rooms/material", {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ roomCode }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(getErrorMessage(payload, "참고 자료를 삭제하지 못했습니다."));
+      setMaterialFile(null);
+      setReferenceNote("");
+      await loadRoom(roomCode, true);
+      setStatus("참고 자료를 삭제했습니다.");
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "참고 자료를 삭제하지 못했습니다.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submitRoomForm(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!canCreateRoom) {
+    if (!canSubmitRoomForm) {
       setStatus("작가 수는 2명에서 10명, 사람 작가는 최소 1명, 총 차례는 전체 작가 수 이상이어야 합니다.");
       return;
     }
     setBusy(true);
-    setStatus("새 방을 만들고 있습니다.");
+    setStatus(formMode === "edit" ? "방 설정을 저장하고 있습니다." : "새 방을 만들고 있습니다.");
+    const payloadBody = {
+      humanLimit: humanWriterCount,
+      aiLimit: aiWriterCount,
+      writerLimit: totalWriters,
+      writerTypes: activeWriterTypes,
+      writerLevels: formWriterLevels,
+      moderationSettings,
+      genre,
+      turnLimit,
+      turnSeconds,
+      orderMode,
+      seedMode,
+      storyTitle: manualTitle.trim(),
+      storySetup: manualSetup.trim(),
+      storyOpener: manualOpener.trim(),
+      referenceNote: referenceNote.trim(),
+    };
     try {
+      const isEdit = formMode === "edit" && editRoomCode;
       const response = await fetch("/api/teacher/rooms", {
-        method: "POST",
+        method: isEdit ? "PATCH" : "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          humanLimit: humanWriterCount,
-          aiLimit: aiWriterCount,
-          writerLimit: totalWriters,
-          writerTypes: activeWriterTypes,
-          writerLevels: formWriterLevels,
-          moderationSettings,
-          genre,
-          turnLimit,
-          turnSeconds,
-          orderMode,
-        }),
+        body: JSON.stringify(isEdit ? { ...payloadBody, action: "update_settings", roomCode: editRoomCode } : payloadBody),
       });
       const payload = await response.json();
-      if (!response.ok) throw new Error(getErrorMessage(payload, "방을 만들지 못했습니다."));
+      if (!response.ok) throw new Error(getErrorMessage(payload, isEdit ? "방 설정을 저장하지 못했습니다." : "방을 만들지 못했습니다."));
       const room = normalizeRoom(payload);
-      if (!room) throw new Error("만든 방 정보를 확인하지 못했습니다.");
+      if (!room) throw new Error(isEdit ? "저장한 방 정보를 확인하지 못했습니다." : "만든 방 정보를 확인하지 못했습니다.");
+      try {
+        await uploadMaterial(room.code);
+      } catch (materialError) {
+        setStatus(materialError instanceof Error ? `${materialError.message} 방은 유지됩니다.` : "참고 자료를 저장하지 못했습니다. 방은 유지됩니다.");
+      }
       setSelectedRoomId(room.id);
       setSelectedRoom(room);
       setTeacherView("rooms");
       setRoomTab("share");
       await loadRooms(true);
-      setStatus(`ROOM ${room.code}를 만들었습니다. AI가 첫 문장을 준비합니다.`);
-      await runAi("seed", room.id, true);
+      if (seedMode === "ai") {
+        setStatus(`${isEdit ? "방 설정을 저장했습니다" : `ROOM ${room.code}를 만들었습니다`}. AI가 첫 문장을 준비합니다.`);
+        const aiSucceeded = await runAi("seed", room.id, true);
+        await loadRoom(room.id, true);
+        setStatus(aiSucceeded ? "AI 첫 문장을 준비했습니다." : "방은 저장했지만 AI 첫 문장을 만들지 못했습니다. 다시 시도해 주세요.");
+      } else {
+        setStatus(isEdit ? "방 설정을 저장했습니다." : `ROOM ${room.code}를 만들었습니다.`);
+      }
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "방을 만들지 못했습니다.");
+      setStatus(error instanceof Error ? error.message : "방 설정을 처리하지 못했습니다.");
     } finally {
       setBusy(false);
     }
@@ -760,7 +1051,7 @@ export function TeacherDashboard({
         <button
           type="button"
           className={effectiveTeacherView === "create" ? "is-selected" : ""}
-          onClick={() => setTeacherView("create")}
+          onClick={resetRoomForm}
         >
           새 방 만들기
         </button>
@@ -773,16 +1064,77 @@ export function TeacherDashboard({
             <span>NEW_ROOM.EXE</span>
             <i aria-hidden="true">● ● ●</i>
           </div>
-          <form onSubmit={createRoom} className="room-create-form">
+          <form onSubmit={submitRoomForm} className="room-create-form">
             <div>
-              <p className="terminal-kicker">ROOM SETUP / SOLAR PRO 4</p>
-              <h1 id="create-title">새 이야기 방 만들기</h1>
-              <p>총 참여자 수를 고른 뒤 자리마다 사람 또는 AI를 지정하세요.</p>
+              <p className="terminal-kicker">{formMode === "edit" ? `EDIT ${editRoomCode}` : "ROOM SETUP / SOLAR PRO 4"}</p>
+              <h1 id="create-title">{formTitle}</h1>
+              <p>{formMode === "copy" ? "기존 설정을 가져왔습니다. 자료 파일은 새 방에 다시 첨부하세요." : "첫 문장 방식과 작가 좌석만 먼저 정하면 바로 시작할 수 있습니다."}</p>
             </div>
+
+            <fieldset className="seed-mode-panel">
+              <legend>처음 시작하는 문장</legend>
+              <div className="seed-mode-options" role="group" aria-label="첫 문장 방식">
+                {[
+                  ["ai", "AI 추천"],
+                  ["manual", "직접 입력"],
+                  ["material", "자료 보고 쓰기"],
+                ].map(([value, label]) => (
+                  <button
+                    type="button"
+                    key={value}
+                    className={seedMode === value ? "is-selected" : ""}
+                    onClick={() => setSeedMode(value as SeedMode)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              {seedMode === "ai" ? (
+                <p className="seed-helper">장르와 수준에 맞춰 AI가 제목, 상황, 첫 문장을 추천합니다.</p>
+              ) : (
+                <div className="seed-manual-grid">
+                  <label className="retro-field">
+                    <span>작품 제목</span>
+                    <input value={manualTitle} onChange={(event) => setManualTitle(event.target.value)} placeholder="예: 비밀 급식실 지도" maxLength={40} />
+                  </label>
+                  <label className="retro-field">
+                    <span>상황 설정</span>
+                    <textarea value={manualSetup} onChange={(event) => setManualSetup(event.target.value)} placeholder="학생들이 참고할 배경이나 조건을 짧게 적어 주세요." maxLength={220} rows={3} />
+                  </label>
+                  <label className="retro-field seed-opener-field">
+                    <span>첫 문장</span>
+                    <textarea value={manualOpener} onChange={(event) => setManualOpener(event.target.value)} placeholder="이 문장 뒤에 학생과 AI가 이어 씁니다." maxLength={160} rows={3} />
+                  </label>
+                </div>
+              )}
+              {(seedMode === "material" || referenceNote || materialFile || (formMode === "edit" && selectedRoom?.material)) && (
+                <div className="material-panel">
+                  <label className="retro-field">
+                    <span>참고 메모</span>
+                    <textarea value={referenceNote} onChange={(event) => setReferenceNote(event.target.value)} placeholder="이미지나 PDF를 보며 쓰게 할 관찰 포인트를 적어 주세요." maxLength={320} rows={3} />
+                  </label>
+                  <label className="file-drop-control">
+                    <span>이미지/PDF 첨부</span>
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp,application/pdf"
+                      onChange={(event) => onMaterialFileChange(event.target.files?.[0] ?? null)}
+                    />
+                    <strong>{materialFile ? materialFile.name : selectedRoom?.material?.name ?? "10MiB 이하 파일 선택"}</strong>
+                  </label>
+                  <div className="material-actions">
+                    {materialFile && <button type="button" onClick={() => setMaterialFile(null)}>선택 취소</button>}
+                    {formMode === "edit" && selectedRoom?.material && (
+                      <button type="button" disabled={busy} onClick={() => void removeMaterial(selectedRoom.code)}>기존 자료 제거</button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </fieldset>
 
             <label className="retro-field">
               <span>참여자 숫자</span>
-              <select value={participantCount} onChange={(event) => setParticipantCount(Number(event.target.value))}>
+              <select value={participantCount} onChange={(event) => setParticipantCount(Number(event.target.value))} disabled={participantControlsLocked}>
                 {PARTICIPANT_COUNTS.map((value) => <option key={value} value={value}>{value}명</option>)}
               </select>
             </label>
@@ -797,6 +1149,7 @@ export function TeacherDashboard({
                       type="button"
                       className={kind === "human" ? "is-selected" : ""}
                       onClick={() => setWriterKind(index, "human")}
+                      disabled={participantControlsLocked}
                     >
                       인간
                     </button>
@@ -804,6 +1157,7 @@ export function TeacherDashboard({
                       type="button"
                       className={kind === "ai" ? "is-selected" : ""}
                       onClick={() => setWriterKind(index, "ai")}
+                      disabled={participantControlsLocked}
                     >
                       AI
                     </button>
@@ -814,6 +1168,7 @@ export function TeacherDashboard({
                       value={formWriterLevels[index]}
                       onChange={(event) => setWriterLevel(index, event.target.value as WriterLevel)}
                       aria-label={`${index + 1}번 ${kind === "human" ? "학생 수준" : "AI 글 수준"}`}
+                      disabled={participantControlsLocked}
                     >
                       {LEVEL_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                     </select>
@@ -843,9 +1198,11 @@ export function TeacherDashboard({
               <p id="moderation-helper">AI 순화 1차 안전장치·의미가 달라질 수 있음</p>
             </fieldset>
 
-            <p className={`writer-total ${!canCreateRoom ? "is-error" : ""}`}>
+            <p className={`writer-total ${!canSubmitRoomForm ? "is-error" : ""}`}>
               TOTAL · {totalWriters}명 · HUMAN {humanWriterCount} · AI {aiWriterCount}
               {turnLimit < totalWriters ? " · 총 차례를 늘려 주세요" : ""}
+              {seedMode !== "ai" && !hasValidManualSeed ? " · 제목·상황·첫 문장을 충분히 입력해 주세요" : ""}
+              {seedMode === "material" && !hasReferenceMaterial ? " · 이미지 또는 PDF가 필요합니다" : ""}
             </p>
 
             <details className="setup-detail">
@@ -885,8 +1242,13 @@ export function TeacherDashboard({
               </fieldset>
             </details>
 
-            <button className="retro-primary" type="submit" disabled={busy || !canCreateRoom}>
-              {busy ? "처리 중…" : "방 개설 + AI 첫 문장"}
+            {formMode !== "create" && (
+              <button className="link-button" type="button" onClick={resetRoomForm}>
+                새 방 만들기로 돌아가기
+              </button>
+            )}
+            <button className="retro-primary" type="submit" disabled={busy || !canSubmitRoomForm}>
+              {busy ? "처리 중…" : formSubmitLabel}
             </button>
           </form>
         </section>
@@ -955,8 +1317,20 @@ export function TeacherDashboard({
                       <p className="terminal-kicker">{selectedRoom.genre.toUpperCase()} · {selectedRoom.seedSource === "ai" ? "AI SEED" : "SAFE SEED"}</p>
                       <h3>{selectedRoom.storyTitle || selectedRoom.title}</h3>
                     </div>
-                    <span className={`status-chip status-${selectedRoom.status}`}>{STATUS_LABEL[selectedRoom.status]}</span>
+                    <div className="room-head-actions">
+                      <span className={`status-chip status-${selectedRoom.status}`}>{STATUS_LABEL[selectedRoom.status]}</span>
+                      <button type="button" onClick={() => prefillRoomForm(selectedRoom, "copy")}>설정 복사</button>
+                      <button type="button" disabled={!selectedRoomCanEditSettings} onClick={() => prefillRoomForm(selectedRoom, "edit")}>설정 편집</button>
+                    </div>
                   </div>
+
+                  {(selectedRoom.referenceNote || selectedRoom.material) && (
+                    <section className="reference-summary" aria-label="학생 참고 자료">
+                      <strong>참고 자료</strong>
+                      {selectedRoom.material?.name && <span>{selectedRoom.material.name}</span>}
+                      {selectedRoom.referenceNote && <p>{selectedRoom.referenceNote}</p>}
+                    </section>
+                  )}
 
                   <section className="teacher-next-action" aria-live="polite">
                     <div>
@@ -1015,7 +1389,7 @@ export function TeacherDashboard({
 
                   {activeRoomTab === "run" && (
                     <section className="room-tab-panel" role="tabpanel">
-                      {selectedRoom.storyOpener ? <blockquote>“{selectedRoom.storyOpener}”</blockquote> : <p className="ai-loading-copy">AI가 첫 문장을 준비하고 있습니다…</p>}
+                      {selectedRoom.storyOpener ? <blockquote>“{selectedRoom.storyOpener}”</blockquote> : <div className="ai-loading-copy"><span aria-hidden="true" />AI가 첫 문장을 준비하고 있습니다…</div>}
                       <div className="writer-slot-grid" aria-label="작가 순서">
                         {orderedWriterSlots.map((slot) => slot.type === "writer" ? (
                           <div
@@ -1089,7 +1463,31 @@ export function TeacherDashboard({
                       </button>
                     </div>
                     {selectedRoom.analysisStatus === "complete" && analysisText ? (
-                      <pre className="analysis-preview">{analysisText}</pre>
+                      <>
+                        <pre className="analysis-preview">{analysisText}</pre>
+                        <div className="teacher-writer-report-grid">
+                          {(selectedRoom.analysisReport?.writers ?? []).map((writer, index) => {
+                            const writerName = writer.name ?? writer.writerName ?? `작가 ${index + 1}`;
+                            return (
+                              <article key={`${writerName}-${index}`} className="teacher-writer-report-card">
+                                <div>
+                                  <strong>{writerName}</strong>
+                                  <span>{writer.contributionShare ?? 0}% · {writer.paragraphs ?? 0}문단 · {writer.characters ?? 0}자</span>
+                                </div>
+                                {(writer.strengths ?? []).length > 0 && <ul>{writer.strengths?.map((strength) => <li key={strength}>{strength}</li>)}</ul>}
+                                {(writer.evidence ?? []).length > 0 && <p><b>근거</b> {writer.evidence?.join(" / ")}</p>}
+                                {(writer.evidenceNotes ?? []).length > 0 && <p><b>관찰</b> {writer.evidenceNotes?.join(" / ")}</p>}
+                                {writer.nextStep && <p><b>다음 연습</b> {writer.nextStep}</p>}
+                                {writer.practicePrompt && <p><b>연습 문장</b> {writer.practicePrompt}</p>}
+                                <div className="writer-report-actions">
+                                  <button type="button" onClick={() => void navigator.clipboard.writeText(getWriterReportText(writer)).then(() => setStatus(`${writerName} 리포트를 복사했습니다.`)).catch(() => setStatus("리포트를 복사하지 못했습니다."))}>개별 복사</button>
+                                  <button type="button" onClick={() => makeDownload(`${selectedRoom.code}-${writerName}-report.txt`, getWriterReportText(writer))}>개별 다운로드</button>
+                                </div>
+                              </article>
+                            );
+                          })}
+                        </div>
+                      </>
                     ) : (
                       <p className="empty-manuscript">완성 후 AI 분석 보고서가 여기에 표시됩니다.</p>
                     )}

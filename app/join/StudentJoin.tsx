@@ -28,13 +28,19 @@ type Entry = {
 };
 
 type WriterReport = {
+  participantId?: string;
   name?: string;
   writerName?: string;
+  level?: WriterLevel;
   contributionShare?: number;
   paragraphs?: number;
   characters?: number;
   strengths?: string[];
+  evidence?: string[];
+  evidenceSnippets?: string[];
+  evidenceNotes?: string[];
   nextStep?: string;
+  practicePrompt?: string;
 };
 
 type AnalysisReport = {
@@ -63,6 +69,9 @@ type Room = {
   storyTitle?: string | null;
   storySetup?: string | null;
   storyOpener?: string | null;
+  seedSource?: string | null;
+  referenceNote?: string | null;
+  material?: RoomMaterial | null;
   participants?: Writer[];
   writers?: Writer[];
   entries?: Entry[];
@@ -72,6 +81,17 @@ type Room = {
   analysisReport?: AnalysisReport | string | null;
   serverNow?: number;
   version?: number;
+};
+
+type RoomMaterial = {
+  id?: string;
+  name?: string;
+  type?: "image" | "pdf" | "note";
+  mimeType?: string;
+  size?: number;
+  available?: boolean;
+  url?: string;
+  note?: string;
 };
 
 type StudentSession = {
@@ -140,6 +160,37 @@ function readOptionalNumber(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+function normalizeMaterial(value: unknown): RoomMaterial | null {
+  if (!value || typeof value !== "object") return null;
+  const material = value as Record<string, unknown>;
+  const mimeType = typeof material.mimeType === "string"
+    ? material.mimeType
+    : typeof material.mime === "string"
+      ? material.mime
+      : typeof material.type === "string"
+        ? material.type
+        : "";
+  const materialType = mimeType.includes("pdf")
+    ? "pdf"
+    : mimeType.startsWith("image/")
+      ? "image"
+      : material.kind === "pdf" || material.type === "pdf"
+        ? "pdf"
+        : material.kind === "image" || material.type === "image"
+          ? "image"
+          : "note";
+  return {
+    id: typeof material.id === "string" ? material.id : typeof material.materialId === "string" ? material.materialId : undefined,
+    name: typeof material.name === "string" ? material.name : typeof material.filename === "string" ? material.filename : undefined,
+    type: materialType,
+    mimeType,
+    size: typeof material.size === "number" ? material.size : undefined,
+    available: material.available === true || typeof material.url === "string" || typeof material.downloadUrl === "string",
+    url: typeof material.url === "string" ? material.url : typeof material.downloadUrl === "string" ? material.downloadUrl : undefined,
+    note: typeof material.note === "string" ? material.note : typeof material.referenceNote === "string" ? material.referenceNote : undefined,
+  };
+}
+
 function normalizeModerationCategories(value: unknown) {
   if (!Array.isArray(value)) return [];
   return value
@@ -177,6 +228,7 @@ function normalizeRoom(payload: unknown): Room | null {
   const currentParticipantId = typeof current?.participantId === "string" ? current.participantId : "";
   const currentPosition = participants.find((writer) => writer.id === currentParticipantId)?.position ?? 0;
   const story = value.story && typeof value.story === "object" ? value.story as Record<string, unknown> : {};
+  const material = normalizeMaterial(value.material ?? value.referenceMaterial ?? value.writingMaterial);
   const rawEntries = Array.isArray(story.entries) ? story.entries as Array<Record<string, unknown>> : [];
   const entries: Entry[] = rawEntries.map((entry, index) => ({
     id: `${code}-${entry.turnIndex ?? index}`,
@@ -205,6 +257,9 @@ function normalizeRoom(payload: unknown): Room | null {
     storyTitle: typeof value.storyTitle === "string" ? value.storyTitle : null,
     storySetup: typeof value.storySetup === "string" ? value.storySetup : null,
     storyOpener: typeof value.storyOpener === "string" ? value.storyOpener : null,
+    seedSource: typeof value.seedSource === "string" ? value.seedSource : null,
+    referenceNote: typeof value.referenceNote === "string" ? value.referenceNote : material?.note ?? null,
+    material,
     participants,
     entries,
     participantCount: Number(value.participantCount ?? participants.filter((writer) => writer.kind === "human").length),
@@ -218,12 +273,19 @@ function normalizeRoom(payload: unknown): Room | null {
 
 function parseAnalysis(value: Room["analysisReport"]): AnalysisReport | null {
   if (!value) return null;
-  if (typeof value === "object") return value;
+  let parsed: AnalysisReport;
   try {
-    return JSON.parse(value) as AnalysisReport;
+    parsed = typeof value === "object" ? value : JSON.parse(value) as AnalysisReport;
   } catch {
     return null;
   }
+  return {
+    ...parsed,
+    writers: (parsed.writers ?? []).map((writer) => ({
+      ...writer,
+      evidence: writer.evidenceSnippets ?? writer.evidence ?? [],
+    })),
+  };
 }
 
 function formatCountdown(deadline: number | null, now: number) {
@@ -242,9 +304,13 @@ export function StudentJoin() {
   const [status, setStatus] = useState("");
   const [statusPersistent, setStatusPersistent] = useState(false);
   const [moderationAlert, setModerationAlert] = useState<ModerationAlert | null>(null);
+  const [material, setMaterial] = useState<RoomMaterial | null>(null);
+  const [materialStatus, setMaterialStatus] = useState("");
   const [busy, setBusy] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const draftRef = useRef<HTMLTextAreaElement>(null);
+  const materialObjectUrlRef = useRef<string | null>(null);
+  const materialRequestKeyRef = useRef("");
 
   const writers = room?.participants ?? room?.writers ?? [];
   const me = session ? writers.find((writer) => writer.id === session.participantId) : null;
@@ -257,6 +323,13 @@ export function StudentJoin() {
     me.id === currentWriter.id,
   );
   const report = useMemo(() => parseAnalysis(room?.analysisReport), [room?.analysisReport]);
+  const myReport = useMemo(() => {
+    if (!report || !me) return null;
+    return (report.writers ?? []).find((writer) => {
+      const writerName = writer.name ?? writer.writerName ?? "";
+      return writer.participantId === me.id || writerName === me.name || writerName === me.displayName;
+    }) ?? null;
+  }, [me, report]);
   const canJoinRoom = Boolean(
     room?.status === "lobby" && (room.availableHumanSlots ?? 0) > 0,
   );
@@ -325,6 +398,55 @@ export function StudentJoin() {
       return null;
     }
   }, [showStatus]);
+
+  const fetchMaterial = useCallback(async (nextRoom: Room, activeSession: StudentSession) => {
+    const requestKey = `${nextRoom.code}:${nextRoom.material?.name ?? ""}:${nextRoom.material?.size ?? 0}:${nextRoom.version ?? 0}:${activeSession.token}`;
+    if (materialRequestKeyRef.current === requestKey) return;
+    materialRequestKeyRef.current = requestKey;
+    if (nextRoom.seedSource !== "reference" || (!nextRoom.material?.available && !nextRoom.referenceNote)) {
+      if (materialObjectUrlRef.current) URL.revokeObjectURL(materialObjectUrlRef.current);
+      materialObjectUrlRef.current = null;
+      setMaterial(null);
+      setMaterialStatus("");
+      return;
+    }
+    setMaterial(nextRoom.material ?? { type: "note", note: nextRoom.referenceNote ?? undefined });
+    if (!nextRoom.material?.available) return;
+    try {
+      const params = new URLSearchParams({ code: nextRoom.code });
+      const response = await fetch(`/api/rooms/material?${params.toString()}`, {
+        headers: { authorization: `Bearer ${activeSession.token}` },
+        cache: "no-store",
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(getErrorMessage(payload, "참고 자료를 불러오지 못했습니다."));
+      }
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      if (materialObjectUrlRef.current) URL.revokeObjectURL(materialObjectUrlRef.current);
+      materialObjectUrlRef.current = objectUrl;
+      setMaterial({
+        ...nextRoom.material,
+        mimeType: response.headers.get("content-type") ?? nextRoom.material?.mimeType,
+        url: objectUrl,
+      });
+      setMaterialStatus("");
+    } catch (error) {
+      materialRequestKeyRef.current = "";
+      setMaterialStatus(error instanceof Error ? error.message : "참고 자료를 불러오지 못했습니다.");
+    }
+  }, []);
+
+  useEffect(() => () => {
+    if (materialObjectUrlRef.current) URL.revokeObjectURL(materialObjectUrlRef.current);
+  }, []);
+
+  useEffect(() => {
+    if (!room || !session || step !== "room") return;
+    const timer = window.setTimeout(() => void fetchMaterial(room, session), 0);
+    return () => window.clearTimeout(timer);
+  }, [fetchMaterial, room?.code, room?.material?.id, room?.referenceNote, room?.version, room, session, step]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -521,6 +643,11 @@ export function StudentJoin() {
       : "입장 대기";
   const meLevelLabel = me ? LEVEL_LABEL[me.level] : null;
   const restrictedNotice = isWritingRestricted ? "작성 제한 상태입니다. 교사에게 경고 초기화를 요청해 주세요." : "";
+  const queueLabel = writers
+    .slice()
+    .sort((a, b) => a.position - b.position)
+    .map((writer) => writer.id === me?.id ? `${writer.name}(나)` : writer.name)
+    .join(" → ");
 
   return (
     <main className="retro-shell student-shell">
@@ -622,6 +749,12 @@ export function StudentJoin() {
               <span style={{ width: `${progress}%` }} />
             </div>
 
+            <div className="student-game-hud" aria-live="polite" aria-atomic="true">
+              <span>현재 {currentWriterLabel}</span>
+              <span>나 {me?.name ?? session.name}</span>
+              <span>{Math.round(progress)}%</span>
+            </div>
+
             <details className="student-roster">
               <summary>작가 순서 보기</summary>
               <div className="student-writer-rail" aria-label="작가 순서">
@@ -659,7 +792,12 @@ export function StudentJoin() {
             {room.status === "lobby" && (
               <div className="retro-window waiting-window">
                 <div className="window-titlebar"><span>입장 대기</span><i aria-hidden="true">● ● ●</i></div>
-                <div><span className="waiting-pulse" aria-hidden="true" /><h2>교사가 활동을 시작하면 자동으로 넘어가요.</h2><p>이 화면을 열어 둔 채 기다려 주세요.</p></div>
+                <div>
+                  <span className="waiting-pulse" aria-hidden="true" />
+                  <p className="terminal-kicker loading-game">게임 로비 동기화 중</p>
+                  <h2>교사가 활동을 시작하면 자동으로 넘어가요.</h2>
+                  <p>작가 대기열 · {queueLabel}</p>
+                </div>
               </div>
             )}
 
@@ -675,6 +813,10 @@ export function StudentJoin() {
               </div>
             )}
 
+            {(room.status === "lobby" || (room.status === "active" && !isMyTurn)) && (
+              <ReferenceMaterial material={material} note={room.referenceNote} status={materialStatus} />
+            )}
+
             {room.status === "active" && isMyTurn && (
               <div className="student-writing-grid">
                 <article className="retro-window student-writing-window">
@@ -682,6 +824,7 @@ export function StudentJoin() {
                   <div className="student-writing-body">
                     <p className="my-turn-badge">지금 쓰기 · {session.name}</p>
                     {room.storySetup && <p className="story-setup">{room.storySetup}</p>}
+                    <ReferenceMaterial material={material} note={room.referenceNote} status={materialStatus} compact />
                     <label htmlFor="student-draft">이어질 문단</label>
                     <textarea
                       ref={draftRef}
@@ -717,22 +860,24 @@ export function StudentJoin() {
                     {report ? (
                       <>
                         {report.summary && <p className="report-summary">{report.summary}</p>}
-                        <details className="report-collapse">
-                          <summary>작가별 상세 보기</summary>
+                        {myReport ? (
                           <div className="writer-report-grid">
-                            {(report.writers ?? []).map((writer, index) => (
-                              <details key={`${writer.name ?? writer.writerName}-${index}`} className="writer-report-item">
-                                <summary>
-                                  <strong>{writer.name ?? writer.writerName ?? "작가"}</strong>
-                                  <span>{writer.paragraphs ?? 0}문단</span>
-                                </summary>
-                                <p className="writer-metric">{writer.paragraphs ?? 0}문단을 이어 썼어요.</p>
-                                {(writer.strengths ?? []).length > 0 && <ul>{writer.strengths?.map((strength) => <li key={strength}>{strength}</li>)}</ul>}
-                                {writer.nextStep && <p><b>다음 연습</b> {writer.nextStep}</p>}
-                              </details>
-                            ))}
+                            <article className="writer-report-item">
+                              <div>
+                                <strong>{myReport.name ?? myReport.writerName ?? session.name}</strong>
+                                <span>{myReport.paragraphs ?? 0}문단</span>
+                              </div>
+                              <p className="writer-metric">{myReport.paragraphs ?? 0}문단을 이어 썼어요.</p>
+                              {(myReport.strengths ?? []).length > 0 && <ul>{myReport.strengths?.map((strength) => <li key={strength}>{strength}</li>)}</ul>}
+                              {(myReport.evidence ?? []).length > 0 && <p><b>근거</b> {myReport.evidence?.join(" / ")}</p>}
+                              {(myReport.evidenceNotes ?? []).length > 0 && <p><b>관찰</b> {myReport.evidenceNotes?.join(" / ")}</p>}
+                              {myReport.nextStep && <p><b>다음 연습</b> {myReport.nextStep}</p>}
+                              {myReport.practicePrompt && <p><b>연습 문장</b> {myReport.practicePrompt}</p>}
+                            </article>
                           </div>
-                        </details>
+                        ) : (
+                          <p className="report-note">내 작가명과 연결된 개인 리포트를 기다리고 있어요.</p>
+                        )}
                         {report.groupSuggestion && (
                           <details className="report-collapse">
                             <summary>다음 작품 제안</summary>
@@ -770,6 +915,37 @@ function LiveStory({ room, final = false }: { room: Room; final?: boolean }) {
           </article>
         ))}
         {(room.entries ?? []).length === 0 && <p className="empty-manuscript">첫 문단을 기다리고 있어요…</p>}
+      </div>
+    </aside>
+  );
+}
+
+function ReferenceMaterial({
+  material,
+  note,
+  status,
+  compact = false,
+}: {
+  material: RoomMaterial | null;
+  note?: string | null;
+  status?: string;
+  compact?: boolean;
+}) {
+  if (!material && !note && !status) return null;
+  const materialUrl = material?.url;
+  return (
+    <aside className={`retro-window reference-material ${compact ? "is-compact" : ""}`} aria-label="참고 자료">
+      <div className="window-titlebar"><span>참고 자료</span><i aria-hidden="true">● ● ●</i></div>
+      <div className="reference-material-body">
+        {materialUrl && material?.type === "image" && <object data={materialUrl} type={material.mimeType || "image/png"} aria-label={material.name ?? "이야기 참고 이미지"} />}
+        {materialUrl && material?.type === "pdf" && (
+          <object data={materialUrl} type="application/pdf" aria-label={material.name ?? "이야기 참고 PDF"}>
+            <a href={materialUrl} target="_blank" rel="noreferrer">PDF 열기</a>
+          </object>
+        )}
+        {material?.name && <strong>{material.name}</strong>}
+        {(material?.note || note) && <p>{material?.note ?? note}</p>}
+        {status && <p className="material-status">{status}</p>}
       </div>
     </aside>
   );
