@@ -461,7 +461,7 @@ test("provides teacher final story and report copy download and print actions", 
   const teacher = await readProjectFile("app/teacher/TeacherDashboard.tsx");
 
   assert.match(teacher, /function getFinalStoryText\(room: Room\)/);
-  assert.match(teacher, /function getAnalysisReportText\(report: unknown\)/);
+  assert.match(teacher, /function getAnalysisReportText\(report: AnalysisReport \| null \| undefined\)/);
   assert.match(teacher, /async function copyText\(kind: "story" \| "report"\)/);
   assert.match(teacher, /function downloadText\(kind: "story" \| "report"\)/);
   assert.match(teacher, /function printExports\(\)/);
@@ -553,7 +553,7 @@ test("keeps student feedback growth-focused without a visible contribution ranki
 
   assert.match(student, /글쓰기 성장 리포트/);
   assert.match(student, /작가 순서 보기/);
-  assert.match(student, /\{writer\.paragraphs \?\? 0\}문단/);
+  assert.match(student, /\{myReport\.paragraphs \?\? 0\}문단/);
   assert.doesNotMatch(student, /% 기여|기여도·글쓰기/);
 });
 
